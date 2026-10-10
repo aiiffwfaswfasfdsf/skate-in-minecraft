@@ -164,6 +164,11 @@ public class SkateInGTA : Script
     float grabTime;
     string grabName;            // INDY GRAB, NOSEGRAB or TAILGRAB, picked by W / S when the grab starts
     bool showHelp;
+    int tutorialStep = -1;      // -1 = no tutorial running
+    bool tutorialDone;
+    float tutSteer, tutLastHeading;
+    bool tutBrakeArmed;
+    Keys tutorialKey;
 
     // grind: 50-50 when you land straight on an edge, boardslide when you land turned 90 degrees
     bool grinding;
@@ -221,7 +226,7 @@ public class SkateInGTA : Script
     static readonly string[] ChallengeIds =
     {
         "ollie", "kickflip", "heelflip", "flick", "spin", "manual", "grind",
-        "boardslide", "flip360", "rocket", "combo5", "score5000", "meat"
+        "boardslide", "flip360", "rocket", "combo5", "score5000", "meat", "hardflip", "nolliekick"
     };
     static readonly string[] ChallengeTexts =
     {
@@ -237,9 +242,15 @@ public class SkateInGTA : Script
         "Rocket jump and land a flip (SHIFT + SPACE, then Q)",
         "Land a 5-trick combo",
         "Score 5,000 in one combo",
-        "Hall of Meat: score 1,000 with a bail (X)"
+        "Hall of Meat: score 1,000 with a bail (X)",
+        "Land a hardflip (ALT + Q)",
+        "Nollie kickflip: hold left mouse, mouse UP, then flick down-left"
     };
-    static readonly string[] FlipTricks = { "KICKFLIP", "HEELFLIP", "POP SHOVE-IT", "FS SHOVE-IT", "360 FLIP", "VARIAL HEELFLIP" };
+    static readonly string[] FlipTricks =
+    {
+        "KICKFLIP", "HEELFLIP", "POP SHOVE-IT", "FS SHOVE-IT", "360 FLIP", "VARIAL HEELFLIP",
+        "HARDFLIP", "INWARD HEELFLIP", "360 SHOVE-IT", "NOLLIE KICKFLIP", "NOLLIE HEELFLIP"
+    };
 
     static readonly Random rng = new Random();
     const string RocketFxAsset = "veh_impexp_rocket";   // Rocket Voltic boost flames
@@ -276,6 +287,7 @@ public class SkateInGTA : Script
         slowMoKey = s.GetValue<Keys>("Controls", "SlowMoKey", Keys.B);
         cameraKey = s.GetValue<Keys>("Controls", "CameraKey", Keys.V);
         helpKey = s.GetValue<Keys>("Controls", "HelpKey", Keys.H);
+        tutorialKey = s.GetValue<Keys>("Controls", "TutorialKey", Keys.T);
 
         soundEnabled = s.GetValue<bool>("Sound", "Enabled", true);
         soundVolume = GetFloat(s, "Sound", "Volume", 0.7f);
@@ -376,6 +388,11 @@ public class SkateInGTA : Script
             Screen.ShowSubtitle(slowMo ? "Slow motion ON" : "Slow motion OFF", 1000);
         }
         else if (e.KeyCode == helpKey) showHelp = !showHelp;
+        else if (e.KeyCode == tutorialKey)
+        {
+            if (tutorialStep >= 0) FinishTutorial(false);
+            else StartTutorial();
+        }
         else if (e.KeyCode == cameraKey && riding)
         {
             camMode = (camMode + 1) % 3;
@@ -461,6 +478,7 @@ public class SkateInGTA : Script
         ResetMoves();
         boosting = false;
         meatActive = false;
+        if (!tutorialDone && tutorialStep < 0) StartTutorial(); // first ride ever: teach the controls
         camFov = 60f;
         if (rocketEnabled) new ParticleEffectAsset(RocketFxAsset).Request(); // load the flames now, not mid-boost
         new ParticleEffectAsset("core").Request();
@@ -604,6 +622,7 @@ public class SkateInGTA : Script
         if (dt <= 0f) return;
         if (dt > 0.05f) dt = 0.05f; // avoid huge jumps after a lag spike
         if (grindCooldown > 0f) grindCooldown -= dt;
+        TutorialTick();
 
         DisableOnFootControls();
 
@@ -626,6 +645,7 @@ public class SkateInGTA : Script
         DrawStick();
         DrawHud();
         DrawTrickFeed();
+        DrawTutorial();
     }
 
     // Stop GTA from using our buttons for running, jumping, punching, etc.
@@ -819,10 +839,12 @@ public class SkateInGTA : Script
     {
         if (trickName != null) return false;
 
+        // ALT (GTA's character-wheel key, unused while riding) turns Q / E / R into harder tricks.
+        bool alt = Pressed(Control.CharacterWheel);
         string name = null;
-        if (JustPressed(Control.Cover)) name = "KICKFLIP";
-        else if (JustPressed(Control.Context)) name = "HEELFLIP";
-        else if (JustPressed(Control.Reload)) name = "POP SHOVE-IT";
+        if (JustPressed(Control.Cover)) name = alt ? "HARDFLIP" : "KICKFLIP";
+        else if (JustPressed(Control.Context)) name = alt ? "INWARD HEELFLIP" : "HEELFLIP";
+        else if (JustPressed(Control.Reload)) name = alt ? "360 SHOVE-IT" : "POP SHOVE-IT";
         if (name == null) return false;
 
         if (onGround) Pop(Math.Max(ollieCharge, 0.5f));
@@ -972,6 +994,11 @@ public class SkateInGTA : Script
         else if (name == "FS SHOVE-IT") StartTrick(name, 0f, -180f, 80, 1f);
         else if (name == "360 FLIP") StartTrick(name, 360f, 360f, 250, 1.3f);
         else if (name == "VARIAL HEELFLIP") StartTrick(name, -360f, -180f, 180, 1.15f);
+        else if (name == "HARDFLIP") StartTrick(name, 360f, -180f, 220, 1.2f);
+        else if (name == "INWARD HEELFLIP") StartTrick(name, -360f, 180f, 200, 1.15f);
+        else if (name == "360 SHOVE-IT") StartTrick(name, 0f, 360f, 150, 1.15f);
+        else if (name == "NOLLIE KICKFLIP") StartTrick(name, 360f, 0f, 140, 1f);
+        else if (name == "NOLLIE HEELFLIP") StartTrick(name, -360f, 0f, 140, 1f);
     }
 
     // ================================================================ Flick-it
@@ -1080,7 +1107,23 @@ public class SkateInGTA : Script
 
         if (flickState == FlickFromUp)
         {
-            if (isDown) return FireFlick("NOLLIE", 0.6f);
+            // Nollie: up first, then down. Down-left = nollie kickflip, down-right = nollie heelflip.
+            bool lowerHalf = far && a < -20f && a > -160f;
+            if (flickSettling)
+            {
+                flickSettleTime += dt;
+                if (lowerHalf) flickSettleAngle = a;
+                if (flickSettleTime < FlickSettle) return false;
+                string nollie = flickSettleAngle <= -112.5f ? "NOLLIE KICKFLIP" : flickSettleAngle >= -67.5f ? "NOLLIE HEELFLIP" : "NOLLIE";
+                return FireFlick(nollie, 0.6f);
+            }
+            if (lowerHalf)
+            {
+                flickSettling = true;
+                flickSettleTime = 0f;
+                flickSettleAngle = a;
+                return false;
+            }
             if (m < 0.3f)
             {
                 flickCenterTime += dt;
@@ -1154,6 +1197,7 @@ public class SkateInGTA : Script
         if (name == "OLLIE" || name == "NOLLIE")
         {
             if (popped) AddTrickText(name, name == "NOLLIE" ? 20 : 0);
+            if (popped) comboTags.Add("FLICK " + name);
         }
         else if (trickName == null)
         {
@@ -1368,6 +1412,7 @@ public class SkateInGTA : Script
         groundNormal = Vector3.WorldUp;
         speed = Math.Min(flatSpeed * 0.9f, rocketMaxSpeed);
         PlaySound("land");
+        Tutorial("grind");
 
         ParticleEffectAsset core = new ParticleEffectAsset("core");
         if (core.IsLoaded)
@@ -1514,7 +1559,11 @@ public class SkateInGTA : Script
     void EndGrab()
     {
         grabbing = false;
-        if (grabTime > 0.15f) AddTrickText(grabName, (grabName == "INDY GRAB" ? 20 : 30) + (int)(grabTime * 150f));
+        if (grabTime > 0.15f)
+        {
+            AddTrickText(grabName, (grabName == "INDY GRAB" ? 20 : 30) + (int)(grabTime * 150f));
+            Tutorial("grab");
+        }
     }
 
     // ================================================================ rocket
@@ -1538,6 +1587,7 @@ public class SkateInGTA : Script
 
         if (on && !boosting)
         {
+            Tutorial("rocket");
             ParticleEffectAsset asset = new ParticleEffectAsset(RocketFxAsset);
             if (asset.IsLoaded)
                 rocketFlame = World.CreateParticleEffect(asset, RocketFxName, anchor, new Vector3(0f, -0.5f, 0.15f),
@@ -1773,9 +1823,11 @@ public class SkateInGTA : Script
         "K  get on / off        W push   S brake   A / D steer",
         "SPACE  hold + release = ollie (longer = higher)",
         "Q kickflip   E heelflip   R shove-it",
+        "ALT + Q hardflip   ALT + E inward heelflip   ALT + R 360 shove-it",
         "LEFT MOUSE hold + mouse down, then flick = Skate tricks",
         "   up = ollie, up-left = kickflip, up-right = heelflip",
         "   left / right = shove-its, left then up = 360 flip",
+        "   mouse UP first, then down / down-left / down-right = nollie tricks",
         "A / D in the air = spin 180 / 360",
         "F in the air = grab (+W nosegrab, +S tailgrab)",
         "Land on rails, ledges, curbs = grind (A / D balance)",
@@ -1783,7 +1835,7 @@ public class SkateInGTA : Script
         "CTRL manual (W / S balance)   C powerslide",
         "SHIFT rocket boost   SHIFT + ollie = rocket jump",
         "J save spot   U back to spot   L spawn ramp   DEL remove ramps",
-        "V camera   B slow motion   X bail on purpose"
+        "V camera   B slow motion   X bail on purpose   T tutorial"
     };
 
     void DrawHelp()
@@ -1795,6 +1847,108 @@ public class SkateInGTA : Script
                 i == 0 ? Color.FromArgb(255, 230, 80) : Color.White, Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
+    // ================================================================ tutorial
+    //
+    // Walks a new player through the mouse + keyboard controls. Each step waits until you've
+    // actually done it. Starts on your first ride; T restarts or skips it.
+
+    static readonly string[] TutorialIds =
+    {
+        "push", "steer", "brake", "ollie", "kickflip", "flickollie", "flickkick", "spin", "grab", "manual", "grind", "rocket"
+    };
+    static readonly string[] TutorialTexts =
+    {
+        "Hold W to push and pick up speed.",
+        "Steer with A and D. Carve a few turns.",
+        "Get some speed, then hold S to brake until you stop.",
+        "OLLIE: hold SPACE to crouch, release to jump. Land it.",
+        "KICKFLIP: press Q. It jumps and flips at once. Land it.",
+        "SKATE CONTROLS: hold LEFT MOUSE, move the mouse DOWN, then flick it UP. That's a Flick-it ollie.",
+        "Same, but flick UP-LEFT for a kickflip (up-right = heelflip). Land it.",
+        "SPIN: jump, then hold A or D in the air. Let go near a half turn to land backwards.",
+        "GRAB: jump, hold F in the air, and let go before you land.",
+        "MANUAL: while rolling, hold CTRL. Keep the marker in the middle with W / S for 2 seconds.",
+        "GRIND: ride along a curb or ledge, ollie and land on its edge. Balance with A / D.",
+        "ROCKET: hold SHIFT to boost. SHIFT + SPACE = rocket jump."
+    };
+
+    void StartTutorial()
+    {
+        tutorialStep = 0;
+        tutSteer = 0f;
+        tutLastHeading = heading;
+        tutBrakeArmed = false;
+    }
+
+    void FinishTutorial(bool completed)
+    {
+        tutorialStep = -1;
+        tutorialDone = true;
+        progress.SetValue("Stats", "TutorialDone", true);
+        progress.Save();
+        if (completed)
+        {
+            Flash("TUTORIAL DONE", "Press " + helpKey + " any time to see all controls. Now go film something!", Color.FromArgb(90, 255, 120));
+            FrontendSound("MEDAL_GOLD", "HUD_AWARDS");
+        }
+        else Screen.ShowSubtitle("Tutorial skipped. " + tutorialKey + " starts it again.", 2500);
+    }
+
+    // Moves to the next step if `id` is what the current step asks for.
+    void Tutorial(string id)
+    {
+        if (tutorialStep < 0 || TutorialIds[tutorialStep] != id) return;
+        tutorialStep++;
+        if (tutorialStep >= TutorialIds.Length)
+        {
+            FinishTutorial(true);
+            return;
+        }
+        FrontendSound("CHECKPOINT_NORMAL", "HUD_MINI_GAME_SOUNDSET");
+        tutSteer = 0f;
+        tutLastHeading = heading;
+        tutBrakeArmed = false;
+    }
+
+    // Steps that are about riding, not about landing tricks.
+    void TutorialTick()
+    {
+        if (tutorialStep < 0) return;
+        string id = TutorialIds[tutorialStep];
+        if (id == "push" && speed > 5f) Tutorial("push");
+        else if (id == "steer")
+        {
+            tutSteer += Math.Abs(heading - tutLastHeading);
+            tutLastHeading = heading;
+            if (tutSteer > 150f) Tutorial("steer");
+        }
+        else if (id == "brake")
+        {
+            if (speed > 4f) tutBrakeArmed = true;
+            if (tutBrakeArmed && speed < 0.5f && !airborne) Tutorial("brake");
+        }
+        else if (id == "manual" && manual && manualTime >= 2f) Tutorial("manual");
+    }
+
+    // Steps that need a landed trick; called when a combo is banked.
+    void TutorialCombo()
+    {
+        if (comboTricks.Contains("OLLIE")) Tutorial("ollie");
+        if (comboTricks.Contains("KICKFLIP")) Tutorial("kickflip");
+        if (comboTags.Contains("FLICK OLLIE")) Tutorial("flickollie");
+        if (comboTags.Contains("FLICK KICKFLIP") || comboTags.Contains("FLICK HEELFLIP")) Tutorial("flickkick");
+        if (comboTags.Contains("SPIN")) Tutorial("spin");
+    }
+
+    void DrawTutorial()
+    {
+        if (tutorialStep < 0) return;
+        Rect(0.5f, 0.74f, 0.62f, 0.09f, 0, 0, 0, 170);
+        new TextElement("TUTORIAL " + (tutorialStep + 1) + " / " + TutorialIds.Length + "   (" + tutorialKey + " = skip)", new PointF(640f, 508f), 0.38f,
+            Color.FromArgb(255, 230, 80), Font.ChaletLondon, Alignment.Center, true, true).Draw();
+        new TextElement(TutorialTexts[tutorialStep], new PointF(640f, 534f), 0.42f, Color.White, Font.ChaletLondon, Alignment.Center, true, true).Draw();
+    }
+
     // ================================================================ challenges
 
     void LoadProgress()
@@ -1802,6 +1956,7 @@ public class SkateInGTA : Script
         progress = ScriptSettings.Load("scripts\\SkateInGTA_progress.ini");
         for (int i = 0; i < ChallengeIds.Length; i++) challengeDone[i] = progress.GetValue<bool>("Challenges", ChallengeIds[i], false);
         bestCombo = progress.GetValue<int>("Stats", "BestCombo", 0);
+        tutorialDone = progress.GetValue<bool>("Stats", "TutorialDone", false);
     }
 
     int ChallengesDone()
@@ -1835,6 +1990,9 @@ public class SkateInGTA : Script
         if (comboTags.Contains("GRIND 3M")) CompleteChallenge("grind");
         if (comboTags.Contains("BOARDSLIDE")) CompleteChallenge("boardslide");
         if (comboTricks.Contains("360 FLIP")) CompleteChallenge("flip360");
+        if (comboTricks.Contains("HARDFLIP")) CompleteChallenge("hardflip");
+        if (comboTricks.Contains("NOLLIE KICKFLIP")) CompleteChallenge("nolliekick");
+        TutorialCombo();
         if (comboTags.Contains("ROCKET"))
             foreach (string f in FlipTricks)
                 if (comboTricks.Contains(f)) CompleteChallenge("rocket");

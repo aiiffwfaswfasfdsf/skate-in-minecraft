@@ -1,12 +1,12 @@
 # Skate in GTA
 
-**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, 360 flip, grind rails and ledges, boardslide, manual, powerslide and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system (hold the left mouse button and flick, like skate.'s mouse controls), 13 challenges, the Hall of Meat, board sounds, a fisheye filmer cam and slow motion for clips, and a **Scramjet-style rocket boost**. Made for **mouse and keyboard**.
+**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, 360 flip, grind rails and ledges, boardslide, manual, powerslide and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system (hold the left mouse button and flick, like skate.'s mouse controls), 15 challenges, a step-by-step tutorial, the Hall of Meat, board sounds, a fisheye filmer cam and slow motion for clips, and a **Scramjet-style rocket boost**. Made for **mouse and keyboard**.
 
 Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game. This mod does the opposite and puts skating into GTA. **You don't need Skate.** You only need GTA V on PC.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.5, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.6, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -47,6 +47,11 @@ ScriptHookVDotNet can compile a raw C# file when the game starts:
 
 ### Your first 5 minutes
 
+On your very first ride, an **in-game tutorial** starts by itself. It shows one step at a time at the bottom of the screen (push, steer, brake, ollie, kickflip, the mouse Flick-it, spin, grab, manual, grind, rocket) and only moves on once you've done it. **T** skips it or starts it again.
+
+Without the tutorial:
+
+
 1. Press **H** any time to see all controls on screen. Press **K** on a quiet street. Hold **W** to push, steer with **A / D**.
 2. Hold **Space** and let go: ollie. Then try **Q** (kickflip).
 3. Find a curb or a bench, ride along it, ollie and land on its edge: you grind. Keep your balance with **A / D**.
@@ -86,6 +91,14 @@ They work on the ground (pop + trick in one press) and in the air.
 
 Tip: hold **Space** to crouch, then press **Q** for a higher kickflip.
 
+Hold **Alt** for the harder versions:
+
+| Trick | Keyboard |
+|---|---|
+| Hardflip | **Alt + Q** |
+| Inward heelflip | **Alt + E** |
+| 360 shove-it | **Alt + R** |
+
 ### Flick-it (like in Skate)
 
 Every gesture starts by pulling the stick **down**, which crouches you. Then you flick it. The pop happens on the flick.
@@ -94,6 +107,8 @@ Every gesture starts by pulling the stick **down**, which crouches you. Then you
 |---|---|---|
 | Ollie | **↓** then **↑** | down, then flick up |
 | Nollie | **↑** then **↓** | up, then flick down |
+| Nollie kickflip | **↑** then **↓ + ←** together | up, then flick down-left |
+| Nollie heelflip | **↑** then **↓ + →** together | up, then flick down-right |
 | Kickflip | **↓** then **↑ + ←** together | down, then flick up-left |
 | Heelflip | **↓** then **↑ + →** together | down, then flick up-right |
 | Pop shove-it | **↓** then tap **←** | down, then left, let go |
