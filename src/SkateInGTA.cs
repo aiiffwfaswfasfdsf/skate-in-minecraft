@@ -47,6 +47,16 @@ public class SkateInGTA : Script
     float landTolerance;    // spin must land within this many degrees of 0 or 180
     float trickDuration;    // seconds for one flip trick
     float airSpinRate;      // degrees per second of body spin in the air
+    float spinAssist;       // degrees per second the spin snaps to 0/180 when you let go (0 = off)
+
+    // Flick-it (Skate-style tricks by flicking a stick)
+    bool flickEnabled;
+    bool arrowFlick;        // arrow keys act as a stick
+    bool mouseFlick;        // the mouse acts as a stick
+    float mouseSensitivity;
+    float mouseReturn;      // how fast the mouse stick springs back to the middle
+    bool invertMouseY;
+    bool showStick;         // small on-screen stick so you can see your flicks
     float pedHeight;        // how high the player stands above the anchor
     float stanceYaw;        // -90 = regular stance, 90 = goofy, 0 = facing forward
     float boardHeight;      // board offset above the anchor
@@ -76,6 +86,22 @@ public class SkateInGTA : Script
     float airSpin;          // body spin in the air (degrees)
 
     float ollieCharge;      // 0..1 while holding the ollie button
+    bool jumpLatch;         // ignore the ollie button until it is released again
+
+    // Flick-it gesture state
+    const int FlickIdle = 0, FlickFromDown = 1, FlickFromUp = 2;
+    int flickState;
+    bool flickNeedsCenter;  // after a trick the stick must go back to the middle first
+    float flickCharge;      // crouch / pop power built up while the stick is held down
+    float flickCenterTime;  // how long the stick has been near the middle
+    int flickSide;          // -1 left, 1 right, 0 none: side the stick is resting on
+    float flickSideTime;
+    int flickSweep;         // side the stick swept through on its way up (-1 / 1 / 0)
+    bool flickSettling;     // waiting a moment so diagonals on the keyboard register
+    float flickSettleTime;
+    float flickSettleAngle;
+    float stickX, stickY;   // current flick stick, -1..1 (up and right are positive)
+    float mouseStickX, mouseStickY;
 
     // tricks
     string trickName;       // null when no trick is running
@@ -83,6 +109,7 @@ public class SkateInGTA : Script
     float trickRoll;        // total board roll for the trick (kickflip = 360)
     float trickYaw;         // total board yaw for the trick (shove-it = 180)
     int trickPoints;
+    float trickScale;       // longer tricks (like the 360 flip) take more time
 
     // score
     int comboPoints;
@@ -90,6 +117,8 @@ public class SkateInGTA : Script
     int totalScore;
 
     const float ChargeTime = 0.6f;          // seconds to fully charge an ollie
+    const float FlickSettle = 0.07f;        // seconds to wait before reading a flick's direction
+    const float FlickMinSideTime = 0.06f;   // the stick must rest on a side this long to count as a sweep
     const IntersectFlags GroundFlags = IntersectFlags.Map | IntersectFlags.Vehicles | IntersectFlags.Objects;
 
     public SkateInGTA()
@@ -105,7 +134,7 @@ public class SkateInGTA : Script
     {
         ScriptSettings s = ScriptSettings.Load("scripts\\SkateInGTA.ini");
 
-        toggleKey = s.GetValue<Keys>("Controls", "ToggleKey", Keys.F5);
+        toggleKey = s.GetValue<Keys>("Controls", "ToggleKey", Keys.K);
 
         string models = s.GetValue<string>("Board", "Models", "v_res_skateboard,v_16_skateboard");
         boardModelNames = models.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
@@ -134,6 +163,15 @@ public class SkateInGTA : Script
         landTolerance = GetFloat(s, "Tricks", "LandTolerance", 35f);
         trickDuration = GetFloat(s, "Tricks", "TrickDuration", 0.45f);
         airSpinRate = GetFloat(s, "Tricks", "AirSpinRate", 420f);
+        spinAssist = GetFloat(s, "Tricks", "SpinAssist", 260f);
+
+        flickEnabled = s.GetValue<bool>("FlickIt", "Enabled", true);
+        arrowFlick = s.GetValue<bool>("FlickIt", "ArrowKeys", true);
+        mouseFlick = s.GetValue<bool>("FlickIt", "Mouse", true);
+        mouseSensitivity = GetFloat(s, "FlickIt", "MouseSensitivity", 0.5f);
+        mouseReturn = GetFloat(s, "FlickIt", "MouseReturn", 8f);
+        invertMouseY = s.GetValue<bool>("FlickIt", "InvertMouseY", false);
+        showStick = s.GetValue<bool>("FlickIt", "ShowStick", true);
 
         useSkateCam = s.GetValue<bool>("Camera", "UseSkateCam", true);
         camDistance = GetFloat(s, "Camera", "Distance", 4.0f);
@@ -228,6 +266,11 @@ public class SkateInGTA : Script
         airborne = false;
         airSpin = 0f;
         ollieCharge = 0f;
+        jumpLatch = Pressed(Control.Jump);
+        ResetFlick();
+        flickNeedsCenter = true;
+        mouseStickX = 0f;
+        mouseStickY = 0f;
         trickName = null;
         comboPoints = 0;
         comboMultiplier = 0;
@@ -242,7 +285,7 @@ public class SkateInGTA : Script
             World.RenderingCamera = cam;
         }
 
-        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer~n~Hold SPACE + release = ollie~n~In air: Q kickflip, E heelflip, R shove-it, A/D spin");
+        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer~n~Hold SPACE + release = ollie~n~Q kickflip, E heelflip, R shove-it~n~Arrows: flick tricks (down, then up)~n~" + toggleKey + " = get off");
     }
 
     // Ends the session cleanly. Used for hopping off, dying, entering a car, or the script unloading.
@@ -348,6 +391,8 @@ public class SkateInGTA : Script
             return;
         }
 
+        ReadFlickStick(dt);
+
         if (airborne) UpdateAir(dt);
         else UpdateGround(dt);
 
@@ -355,6 +400,7 @@ public class SkateInGTA : Script
 
         UpdateEntities(ped);
         UpdateCamera(dt);
+        DrawStick();
     }
 
     // Stop GTA from using our buttons for running, jumping, punching, etc.
@@ -365,7 +411,11 @@ public class SkateInGTA : Script
             Control.MoveLeftRight, Control.MoveUpDown, Control.MoveUpOnly, Control.MoveDownOnly,
             Control.MoveLeftOnly, Control.MoveRightOnly, Control.Jump, Control.Sprint, Control.Duck,
             Control.Cover, Control.Context, Control.Reload, Control.Enter, Control.Attack, Control.Aim,
-            Control.MeleeAttackLight, Control.MeleeAttackHeavy, Control.MeleeAttackAlternate
+            Control.MeleeAttackLight, Control.MeleeAttackHeavy, Control.MeleeAttackAlternate,
+            Control.SelectWeapon, Control.WeaponWheelNext, Control.WeaponWheelPrev,
+            Control.Phone, Control.PhoneUp, Control.PhoneDown, Control.PhoneLeft, Control.PhoneRight,
+            Control.CharacterWheel, Control.SelectCharacterMichael, Control.SelectCharacterFranklin,
+            Control.SelectCharacterTrevor, Control.LookLeftRight, Control.LookUpDown, Control.LookBehind
         };
         foreach (Control c in controls) Game.DisableControlThisFrame(c);
     }
@@ -397,18 +447,23 @@ public class SkateInGTA : Script
         heading -= steer * turnRate * turnScale * dt;
 
         // Ollie: hold to crouch, release to pop.
-        if (Pressed(Control.Jump))
+        if (jumpLatch && !Pressed(Control.Jump)) jumpLatch = false;
+        if (!jumpLatch && Pressed(Control.Jump))
         {
             ollieCharge = Math.Min(ollieCharge + dt / ChargeTime, 1f);
         }
         else if (ollieCharge > 0f)
         {
-            float pop = ollieMin + (ollieMax - ollieMin) * ollieCharge;
-            ollieCharge = 0f;
-            Launch(forward * speed + Vector3.WorldUp * (pop + Math.Max(groundVz, 0f)));
+            Pop(ollieCharge);
             AddTrickText("OLLIE", 0);
             return;
         }
+
+        // One-key tricks: Q / E / R pop and flip in one go (you can still hold SPACE first for a higher pop).
+        if (TryButtonTrick(true)) return;
+
+        // Flick-it: Skate-style stick gestures.
+        if (UpdateFlick(dt)) return;
 
         // Walls: look a little ahead of the board.
         float step = speed * dt;
@@ -443,6 +498,31 @@ public class SkateInGTA : Script
         }
     }
 
+    // Jump off the ground. charge 0..1 decides how high.
+    void Pop(float charge)
+    {
+        float pop = ollieMin + (ollieMax - ollieMin) * charge;
+        if (Pressed(Control.Jump)) jumpLatch = true;
+        ollieCharge = 0f;
+        Launch(ForwardFromHeading(heading) * speed + Vector3.WorldUp * (pop + Math.Max(groundVz, 0f)));
+    }
+
+    // Q / E / R tricks. On the ground they pop first, in the air they just flip.
+    bool TryButtonTrick(bool onGround)
+    {
+        if (trickName != null) return false;
+
+        string name = null;
+        if (JustPressed(Control.Cover)) name = "KICKFLIP";
+        else if (JustPressed(Control.Context)) name = "HEELFLIP";
+        else if (JustPressed(Control.Reload)) name = "POP SHOVE-IT";
+        if (name == null) return false;
+
+        if (onGround) Pop(Math.Max(ollieCharge, 0.5f));
+        StartNamedTrick(name);
+        return onGround;
+    }
+
     void Launch(Vector3 velocity)
     {
         airborne = true;
@@ -456,18 +536,28 @@ public class SkateInGTA : Script
     void UpdateAir(float dt)
     {
         float steer = Game.GetDisabledControlValueNormalized(Control.MoveLeftRight);
-        airSpin -= steer * airSpinRate * dt;
+        if (Math.Abs(steer) > 0.1f)
+        {
+            airSpin -= steer * airSpinRate * dt;
+        }
+        else if (spinAssist > 0f)
+        {
+            // Spin assist: when you let go, finish the turn to the nearest 0 / 180 / 360...
+            float target = (float)Math.Round(airSpin / 180f) * 180f;
+            float diff = target - airSpin;
+            float stepDeg = spinAssist * dt;
+            airSpin += Math.Abs(diff) <= stepDeg ? diff : Math.Sign(diff) * stepDeg;
+        }
 
         // Start a flip trick if none is running.
         if (trickName == null)
         {
-            if (JustPressed(Control.Cover)) StartTrick("KICKFLIP", 360f, 0f, 100);
-            else if (JustPressed(Control.Context)) StartTrick("HEELFLIP", -360f, 0f, 100);
-            else if (JustPressed(Control.Reload)) StartTrick("POP SHOVE-IT", 0f, 180f, 80);
+            if (!TryButtonTrick(false)) UpdateFlick(dt);
         }
         else
         {
-            trickTime += dt / trickDuration;
+            UpdateFlick(dt); // keep the gesture state up to date
+            trickTime += dt / (trickDuration * trickScale);
             if (trickTime >= 1f)
             {
                 AddTrickText(trickName, trickPoints);
@@ -508,13 +598,227 @@ public class SkateInGTA : Script
         pos = next;
     }
 
-    void StartTrick(string name, float roll, float yaw, int points)
+    void StartTrick(string name, float roll, float yaw, int points, float scale)
     {
         trickName = name;
         trickTime = 0f;
         trickRoll = roll;
         trickYaw = yaw;
         trickPoints = points;
+        trickScale = scale;
+    }
+
+    // All flip tricks in one place: board roll (flip), board yaw (shove-it), points, time.
+    void StartNamedTrick(string name)
+    {
+        if (name == "KICKFLIP") StartTrick(name, 360f, 0f, 100, 1f);
+        else if (name == "HEELFLIP") StartTrick(name, -360f, 0f, 100, 1f);
+        else if (name == "POP SHOVE-IT") StartTrick(name, 0f, 180f, 80, 1f);
+        else if (name == "FS SHOVE-IT") StartTrick(name, 0f, -180f, 80, 1f);
+        else if (name == "360 FLIP") StartTrick(name, 360f, 360f, 250, 1.3f);
+        else if (name == "VARIAL HEELFLIP") StartTrick(name, -360f, -180f, 180, 1.15f);
+    }
+
+    // ================================================================ Flick-it
+    //
+    // In Skate you do tricks by "flicking" the right stick. Here the stick can be a controller's
+    // right stick, the arrow keys, or the mouse. All gestures start by pulling the stick DOWN
+    // (crouch), then flicking it somewhere (pop + trick). Regular stance:
+    //
+    //   down, up            OLLIE              up, down            NOLLIE
+    //   down, up-left       KICKFLIP           down, up-right      HEELFLIP
+    //   down, left          POP SHOVE-IT       down, right         FS SHOVE-IT
+    //   down, left, up      360 FLIP           down, right, up     VARIAL HEELFLIP
+
+    void ReadFlickStick(float dt)
+    {
+        stickX = 0f;
+        stickY = 0f;
+
+        // The mouse stick moves with the mouse and springs back to the middle on its own.
+        float back = (float)Math.Exp(-mouseReturn * dt);
+        mouseStickX *= back;
+        mouseStickY *= back;
+        if (mouseFlick)
+        {
+            mouseStickX += Game.GetDisabledControlValueNormalized(Control.LookLeftRight) * mouseSensitivity;
+            mouseStickY -= Game.GetDisabledControlValueNormalized(Control.LookUpDown) * mouseSensitivity * (invertMouseY ? -1f : 1f);
+            float len = (float)Math.Sqrt(mouseStickX * mouseStickX + mouseStickY * mouseStickY);
+            if (len > 1f)
+            {
+                mouseStickX /= len;
+                mouseStickY /= len;
+            }
+        }
+
+        if (!flickEnabled) return;
+
+        if (Game.LastInputMethod == InputMethod.GamePad)
+        {
+            stickX = Game.GetDisabledControlValueNormalized(Control.LookLeftRight);
+            stickY = -Game.GetDisabledControlValueNormalized(Control.LookUpDown);
+            return;
+        }
+
+        if (arrowFlick)
+        {
+            float ax = (Game.IsKeyPressed(Keys.Right) ? 1f : 0f) - (Game.IsKeyPressed(Keys.Left) ? 1f : 0f);
+            float ay = (Game.IsKeyPressed(Keys.Up) ? 1f : 0f) - (Game.IsKeyPressed(Keys.Down) ? 1f : 0f);
+            if (ax != 0f || ay != 0f)
+            {
+                float len = (float)Math.Sqrt(ax * ax + ay * ay);
+                stickX = ax / len;
+                stickY = ay / len;
+                return;
+            }
+        }
+
+        if (mouseFlick)
+        {
+            stickX = mouseStickX;
+            stickY = mouseStickY;
+        }
+    }
+
+    void ResetFlick()
+    {
+        flickState = FlickIdle;
+        flickCharge = 0f;
+        flickCenterTime = 0f;
+        flickSide = 0;
+        flickSideTime = 0f;
+        flickSweep = 0;
+        flickSettling = false;
+        flickSettleTime = 0f;
+    }
+
+    // Returns true if the gesture made us jump off the ground this frame.
+    bool UpdateFlick(float dt)
+    {
+        if (!flickEnabled) return false;
+
+        float m = (float)Math.Sqrt(stickX * stickX + stickY * stickY);
+        float a = RadToDeg((float)Math.Atan2(stickY, stickX)); // 0 right, 90 up, 180 / -180 left, -90 down
+        bool far = m > 0.7f;
+        bool isDown = far && a >= -135f && a <= -45f;
+        bool isUp = far && a >= 45f && a <= 135f;
+        bool upperHalf = far && a > 20f && a < 160f;
+        int side = 0;
+        if (far && Math.Abs(a) >= 150f) side = -1;
+        else if (far && Math.Abs(a) <= 30f) side = 1;
+
+        if (flickNeedsCenter)
+        {
+            if (m < 0.3f) flickNeedsCenter = false;
+            return false;
+        }
+
+        if (flickState == FlickIdle)
+        {
+            if (isDown) { ResetFlick(); flickState = FlickFromDown; }
+            else if (isUp) { ResetFlick(); flickState = FlickFromUp; }
+            return false;
+        }
+
+        if (flickState == FlickFromUp)
+        {
+            if (isDown) return FireFlick("NOLLIE", 0.6f);
+            if (m < 0.3f)
+            {
+                flickCenterTime += dt;
+                if (flickCenterTime > 0.25f) ResetFlick();
+            }
+            else flickCenterTime = 0f;
+            return false;
+        }
+
+        // FlickFromDown: crouching, waiting for the flick.
+        flickCharge = Math.Min(flickCharge + dt / ChargeTime, 1f);
+
+        if (flickSettling)
+        {
+            flickSettleTime += dt;
+            if (upperHalf) flickSettleAngle = a;
+            if (flickSettleTime < FlickSettle) return false;
+
+            string name;
+            if (flickSweep < 0) name = "360 FLIP";
+            else if (flickSweep > 0) name = "VARIAL HEELFLIP";
+            else if (flickSettleAngle >= 112.5f) name = "KICKFLIP";
+            else if (flickSettleAngle <= 67.5f) name = "HEELFLIP";
+            else name = "OLLIE";
+            return FireFlick(name, Math.Max(flickCharge, 0.4f));
+        }
+
+        if (upperHalf)
+        {
+            if (flickSide != 0 && flickSideTime >= FlickMinSideTime) flickSweep = flickSide;
+            flickSettling = true;
+            flickSettleTime = 0f;
+            flickSettleAngle = a;
+            return false;
+        }
+
+        if (side != 0)
+        {
+            flickCenterTime = 0f;
+            if (side == flickSide) flickSideTime += dt;
+            else { flickSide = side; flickSideTime = dt; }
+            if (flickSideTime > 0.35f) return FireFlick(side < 0 ? "POP SHOVE-IT" : "FS SHOVE-IT", Math.Max(flickCharge, 0.4f));
+            return false;
+        }
+
+        if (m < 0.3f)
+        {
+            flickCenterTime += dt;
+            // Down, side, let go = shove-it. Down and let go = cancel.
+            if (flickSide != 0 && flickSideTime >= FlickMinSideTime && flickCenterTime > 0.12f)
+                return FireFlick(flickSide < 0 ? "POP SHOVE-IT" : "FS SHOVE-IT", Math.Max(flickCharge, 0.4f));
+            if (flickCenterTime > 0.25f) ResetFlick();
+        }
+        else flickCenterTime = 0f;
+
+        return false;
+    }
+
+    bool FireFlick(string name, float charge)
+    {
+        ResetFlick();
+        flickNeedsCenter = true;
+
+        bool popped = false;
+        if (!airborne)
+        {
+            Pop(charge);
+            popped = true;
+        }
+
+        if (name == "OLLIE" || name == "NOLLIE")
+        {
+            if (popped) AddTrickText(name, name == "NOLLIE" ? 20 : 0);
+        }
+        else if (trickName == null)
+        {
+            StartNamedTrick(name);
+        }
+        return popped;
+    }
+
+    // Small stick display in the bottom right corner, so you can see what your flicks do.
+    void DrawStick()
+    {
+        if (!showStick || !flickEnabled) return;
+
+        const float cx = 0.93f, cy = 0.82f, size = 0.07f;
+        float aspect = Screen.AspectRatio;
+        Function.Call(Hash.DRAW_RECT, cx, cy, size / aspect, size, 0, 0, 0, 120, false);
+        Function.Call(Hash.DRAW_RECT, cx, cy, 0.003f / aspect, size, 255, 255, 255, 40, false);
+        Function.Call(Hash.DRAW_RECT, cx, cy, size / aspect, 0.003f, 255, 255, 255, 40, false);
+
+        float dotX = cx + stickX * (size * 0.45f) / aspect;
+        float dotY = cy - stickY * (size * 0.45f);
+        bool crouching = flickState == FlickFromDown;
+        Function.Call(Hash.DRAW_RECT, dotX, dotY, 0.012f / aspect, 0.012f, 255, crouching ? 200 : 255, crouching ? 0 : 255, 230, false);
     }
 
     void Land(RaycastResult ground, float flatSpeed)
@@ -595,7 +899,7 @@ public class SkateInGTA : Script
         anchor.Rotation = new Vector3(pitch, roll, visualYaw);
 
         // Crouch while charging an ollie.
-        float crouch = ollieCharge * 0.25f;
+        float crouch = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f) * 0.25f;
         ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - crouch), new Vector3(0f, 0f, stanceYaw));
 
         if (board != null && board.Exists())
