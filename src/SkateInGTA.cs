@@ -371,7 +371,7 @@ public class SkateInGTA : Script
 
     void OnKeyDown(object sender, System.Windows.Forms.KeyEventArgs e)
     {
-        if (Game.IsPaused) return;
+        if (Game.IsPaused || Game.IsCutsceneActive || Function.Call<int>(Hash.UPDATE_ONSCREEN_KEYBOARD) == 0) return; // 0 = a text box is open
 
         if (e.KeyCode == toggleKey)
         {
@@ -389,7 +389,7 @@ public class SkateInGTA : Script
             Game.TimeScale = slowMo ? 0.4f : 1f;
             Screen.ShowSubtitle(slowMo ? "Slow motion ON" : "Slow motion OFF", 1000);
         }
-        else if (e.KeyCode == helpKey) showHelp = !showHelp;
+        else if (e.KeyCode == helpKey && !Game.Player.Character.IsInVehicle()) showHelp = !showHelp; // H = headlights in cars
         else if (e.KeyCode == tutorialKey)
         {
             if (tutorialStep >= 0) FinishTutorial(false);
@@ -442,6 +442,8 @@ public class SkateInGTA : Script
         if (anchor == null)
         {
             Notification.Show("~r~Skate in GTA:~s~ failed to spawn the board.");
+            anchorModel.MarkAsNoLongerNeeded();
+            if (boardModel != null) boardModel.MarkAsNoLongerNeeded();
             return;
         }
         anchor.IsPositionFrozen = true;
@@ -886,6 +888,9 @@ public class SkateInGTA : Script
 
     void Launch(Vector3 velocity)
     {
+        if (manual) EndManual(); // rolling off an edge in a manual banks its points
+        groundVz = 0f;
+        ollieCharge = 0f;
         airborne = true;
         airVelocity = velocity;
         airSpin = 0f;
@@ -1057,8 +1062,16 @@ public class SkateInGTA : Script
         }
         else
         {
-            mouseStickX += Game.GetDisabledControlValueNormalized(Control.LookLeftRight) * mouseSensitivity;
-            mouseStickY -= Game.GetDisabledControlValueNormalized(Control.LookUpDown) * mouseSensitivity * (invertMouseY ? -1f : 1f);
+            float mdx = Game.GetDisabledControlValueNormalized(Control.LookLeftRight) * mouseSensitivity;
+            float mdy = -Game.GetDisabledControlValueNormalized(Control.LookUpDown) * mouseSensitivity * (invertMouseY ? -1f : 1f);
+            // Moving back against where the stick sits = a flick: start again from the middle, like a stick springing back.
+            if (mouseStickX * mouseStickX + mouseStickY * mouseStickY > 0.36f && mouseStickX * mdx + mouseStickY * mdy < 0f)
+            {
+                mouseStickX = 0f;
+                mouseStickY = 0f;
+            }
+            mouseStickX += mdx;
+            mouseStickY += mdy;
             float len = (float)Math.Sqrt(mouseStickX * mouseStickX + mouseStickY * mouseStickY);
             if (len > 1f)
             {
@@ -1339,7 +1352,7 @@ public class SkateInGTA : Script
             {
                 bestCombo = earned;
                 progress.SetValue("Stats", "BestCombo", bestCombo);
-                progress.Save();
+                SaveProgress();
             }
             Flash("+" + earned, record ? "NEW BEST COMBO!" : string.Join(" + ", comboTricks.ToArray()), Color.FromArgb(90, 255, 120));
             if (earned >= 1000) FrontendSound("CHECKPOINT_PERFECT", "HUD_MINI_GAME_SOUNDSET");
@@ -1460,7 +1473,7 @@ public class SkateInGTA : Script
         Vector3 right = new Vector3(fwd.Y, -fwd.X, 0f);
 
         if (HandlePopInputs(dt)) return;   // ollie or flip out of the grind (Pop ends it)
-        if (throttle < -0.5f || speed < 1.5f)
+        if (JustPressed(Control.MoveDownOnly) || speed < 1.5f)
         {
             HopOffGrind();                 // S steps off, like the brake button in Skate
             return;
@@ -1507,6 +1520,7 @@ public class SkateInGTA : Script
             EndGrind();
             pos = top.HitPosition;
             groundNormal = top.SurfaceNormal;
+            if (Pressed(Control.Duck)) StartManual(); else BankCombo();
             return;
         }
 
@@ -1672,6 +1686,7 @@ public class SkateInGTA : Script
         if (ped.IsDead || ped.IsInVehicle()) return;
         meatActive = false;
 
+        LoadCollisionAt(markerPos, riding ? (Entity)anchor : ped);
         if (riding)
         {
             pos = SnapToGround(markerPos);
@@ -1686,9 +1701,19 @@ public class SkateInGTA : Script
         }
 
         ped.Task.ClearAllImmediately(); // also stops a ragdoll after a bail
-        ped.PositionNoOffset = markerPos;
         ped.Heading = markerHeading;
         StartRiding(true);
+    }
+
+    // Teleporting across the map: wait (max ~2 s) until the ground there exists, or we'd fall through it.
+    void LoadCollisionAt(Vector3 at, Entity who)
+    {
+        who.PositionNoOffset = at;
+        for (int i = 0; i < 120 && !Function.Call<bool>(Hash.HAS_COLLISION_LOADED_AROUND_ENTITY, who); i++)
+        {
+            Function.Call(Hash.REQUEST_COLLISION_AT_COORD, at.X, at.Y, at.Z);
+            Wait(0);
+        }
     }
 
     // Skate 3-style object dropper: spawns GTA's own skatepark props in front of you.
@@ -1829,7 +1854,7 @@ public class SkateInGTA : Script
     {
         if (flashTime <= 0f) return;
         flashTime -= Game.LastFrameTime;
-        int alpha = (int)(Math.Min(flashTime / 0.5f, 1f) * 255f);
+        int alpha = (int)(Math.Max(0f, Math.Min(flashTime / 0.5f, 1f)) * 255f);
         new TextElement(flashText, new PointF(640f, 170f), 0.9f, Color.FromArgb(alpha, flashColor), Font.Pricedown, Alignment.Center, true, true).Draw();
         if (!string.IsNullOrEmpty(flashSub))
             new TextElement(flashSub, new PointF(640f, 222f), 0.4f, Color.FromArgb(alpha, 255, 255, 255), Font.ChaletLondon, Alignment.Center, true, true).Draw();
@@ -1860,7 +1885,7 @@ public class SkateInGTA : Script
     void DrawWatermark()
     {
         if (Game.IsPaused) return;
-        new TextElement("SKATE IN GTA  v0.7  made by Claude" + (riding ? "" : "  -  " + toggleKey + " = skate"), new PointF(12f, 694f), 0.3f,
+        new TextElement("SKATE IN GTA  v0.8  made by Claude" + (riding ? "" : "  -  " + toggleKey + " = skate"), new PointF(12f, 694f), 0.3f,
             Color.FromArgb(170, 255, 255, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
@@ -1932,7 +1957,7 @@ public class SkateInGTA : Script
         tutorialStep = -1;
         tutorialDone = true;
         progress.SetValue("Stats", "TutorialDone", true);
-        progress.Save();
+        SaveProgress();
         if (completed)
         {
             Flash("TUTORIAL DONE", "Press " + helpKey + " any time to see all controls. Now go film something!", Color.FromArgb(90, 255, 120));
@@ -1962,7 +1987,8 @@ public class SkateInGTA : Script
     {
         if (tutorialStep < 0) return;
         string id = TutorialIds[tutorialStep];
-        if (id == "push" && speed > 5f) Tutorial("push");
+        float tIn = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown);
+        if (id == "push" && speed > 5f && tIn > 0.1f) Tutorial("push");
         else if (id == "steer")
         {
             float turned = heading - tutLastHeading;
@@ -1974,7 +2000,7 @@ public class SkateInGTA : Script
         }
         else if (id == "brake")
         {
-            if (speed > 4f) tutBrakeArmed = true;
+            if (speed > 4f && tIn < -0.1f) tutBrakeArmed = true;
             if (tutBrakeArmed && speed < 0.5f && !airborne) Tutorial("brake");
         }
         else if (id == "manual" && manual && manualTime >= 2f) Tutorial("manual");
@@ -2001,6 +2027,11 @@ public class SkateInGTA : Script
 
     // ================================================================ challenges
 
+    void SaveProgress()
+    {
+        try { progress.Save(); } catch (Exception) { } // read-only folder: progress just isn't saved
+    }
+
     void LoadProgress()
     {
         progress = ScriptSettings.Load("scripts\\SkateInGTA_progress.ini");
@@ -2022,7 +2053,7 @@ public class SkateInGTA : Script
         if (i < 0 || challengeDone[i]) return;
         challengeDone[i] = true;
         progress.SetValue("Challenges", id, true);
-        progress.Save();
+        SaveProgress();
         totalScore += 500;
         Notification.Show("~g~CHALLENGE COMPLETE~s~ (" + ChallengesDone() + "/" + ChallengeIds.Length + ")~n~" + ChallengeTexts[i] + "~n~+500");
         FrontendSound("MEDAL_GOLD", "HUD_AWARDS");
@@ -2265,7 +2296,11 @@ public class SkateInGTA : Script
         if (string.IsNullOrEmpty(name)) return null;
         Model m = new Model(name);
         if (!m.IsInCdImage || !m.IsValid) return null;
-        if (!m.Request(1000)) return null;
+        if (!m.Request(1000))
+        {
+            m.MarkAsNoLongerNeeded();
+            return null;
+        }
         return m;
     }
 
