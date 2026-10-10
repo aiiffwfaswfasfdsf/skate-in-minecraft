@@ -27,12 +27,14 @@ function Stop-Install($text) {
     Read-Host "Enter druecken zum Schliessen / press Enter to close" | Out-Null
     exit 1
 }
+trap { Stop-Install $_.Exception.Message } # any unexpected error: show it instead of closing the window
 
 # Game folders under Program Files need admin rights, so restart elevated if needed.
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Say "Starte als Administrator neu (Windows fragt gleich nach) ..." Yellow
-    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -c `"irm $Self | iex`""
+    try { Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -c `"irm $Self | iex`"" }
+    catch { Stop-Install "Bitte bei der Windows-Frage auf 'Ja' klicken. / Please click 'Yes' when Windows asks." }
     exit
 }
 
@@ -47,21 +49,23 @@ if (Get-Process -Name 'GTA5*', 'PlayGTAV' -ErrorAction SilentlyContinue) {
 # ---------------------------------------------------------------- 1. find the game folder
 
 function Test-GameDir($dir) {
-    return $dir -and (Test-Path $dir) -and (Get-ChildItem -Path $dir -Filter 'GTA5*.exe' -File -ErrorAction SilentlyContinue)
+    return $dir -and (Test-Path $dir -PathType Container) -and (Get-ChildItem -Path $dir -Filter 'GTA5*.exe' -File -ErrorAction SilentlyContinue)
 }
 
 $candidates = New-Object System.Collections.Generic.List[string]
 $steam = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction SilentlyContinue).SteamPath
+# elevated on a child account, HKCU belongs to the admin who clicked Yes
+if (-not $steam) { $steam = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam' -ErrorAction SilentlyContinue).InstallPath }
 if ($steam) {
     $libs = @($steam)
     $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
     if (Test-Path $vdf) {
-        foreach ($m in [regex]::Matches((Get-Content $vdf -Raw), '"path"\s+"([^"]+)"')) { $libs += $m.Groups[1].Value -replace '\\\\', '\' }
+        foreach ($m in [regex]::Matches((Get-Content $vdf -Raw -Encoding UTF8), '"path"\s+"([^"]+)"')) { $libs += $m.Groups[1].Value -replace '\\\\', '\' }
     }
-    foreach ($lib in $libs) {
-        $candidates.Add((Join-Path $lib 'steamapps\common\Grand Theft Auto V Enhanced'))
-        $candidates.Add((Join-Path $lib 'steamapps\common\Grand Theft Auto V'))
-    }
+    # Enhanced in every library first, so it wins over a Legacy copy; plain strings because
+    # Join-Path fails on a library drive that is unplugged
+    foreach ($lib in $libs) { $candidates.Add("$lib\steamapps\common\Grand Theft Auto V Enhanced") }
+    foreach ($lib in $libs) { $candidates.Add("$lib\steamapps\common\Grand Theft Auto V") }
 }
 foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
     if (-not $root) { continue }
@@ -94,12 +98,18 @@ try {
     # dev-c.com only hands out the zip when the request comes from its own page
     Invoke-WebRequest -Uri "https://www.dev-c.com/files/$zipName" -OutFile $shvZip -UserAgent $Ua -Headers @{ Referer = 'https://www.dev-c.com/gtav/scripthookv/' } -UseBasicParsing
     Expand-Archive -Path $shvZip -DestinationPath (Join-Path $tmp 'shv') -Force
-    Copy-Item -Path (Join-Path $tmp 'shv\bin\*') -Destination $game -Force
+    $hadArgs = Test-Path (Join-Path $game 'args.txt')
+    Get-ChildItem -Path (Join-Path $tmp 'shv\bin') -File | Where-Object { -not ($hadArgs -and $_.Name -eq 'args.txt') } | Copy-Item -Destination $game -Force
+    if ($hadArgs) {
+        $argsFile = Join-Path $game 'args.txt'
+        if ((Get-Content $argsFile -Raw) -notmatch '-nobattleye') { Add-Content $argsFile ' -nobattleye' }
+    }
     Say "  $zipName installiert (inkl. args.txt = BattlEye aus fuer Story Mode)" Green
 
     # ------------------------------------------------------------ 3. ScriptHookVDotNet Enhanced
     Say "Lade ScriptHookVDotNet Enhanced ..." Cyan
-    $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/Chiheb-Bacha/ScriptHookVDotNetEnhanced/releases/latest' -UserAgent $Ua
+    try { $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/Chiheb-Bacha/ScriptHookVDotNetEnhanced/releases/latest' -UserAgent $Ua }
+    catch { Stop-Install "GitHub nicht erreichbar ($($_.Exception.Message)). In einer Stunde nochmal versuchen. / Try again in an hour." }
     $asset = $rel.assets | Where-Object { $_.name -like '*.zip' } | Select-Object -First 1
     if (-not $asset) { Stop-Install "Kein Download bei ScriptHookVDotNet Enhanced gefunden: https://github.com/Chiheb-Bacha/ScriptHookVDotNetEnhanced/releases" }
     $dotnetZip = Join-Path $tmp 'shvdn.zip'
@@ -110,7 +120,8 @@ try {
     $root = $dotnetDir
     $inner = @(Get-ChildItem -Path $dotnetDir)
     if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $root = $inner[0].FullName } # zip with one top folder
-    Get-ChildItem -Path $root -File | Where-Object { $_.Name -notlike 'README*' } | Copy-Item -Destination $game -Force
+    # keep the user's own ScriptHookVDotNet.ini on updates
+    Get-ChildItem -Path $root -File | Where-Object { $_.Name -notlike 'README*' -and -not ($_.Extension -eq '.ini' -and (Test-Path (Join-Path $game $_.Name))) } | Copy-Item -Destination $game -Force
     Say "  ScriptHookVDotNet $($rel.tag_name) installiert" Green
 
     # ------------------------------------------------------------ 4. Skate in GTA
@@ -148,6 +159,12 @@ catch {
 }
 finally {
     Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# antivirus sometimes deletes hook files right after copying
+Start-Sleep -Seconds 3
+foreach ($f in @('ScriptHookV.dll', 'dinput8.dll', 'ScriptHookVDotNet.asi', 'scripts\SkateInGTA.dll')) {
+    if (-not (Test-Path (Join-Path $game $f))) { Stop-Install "$f fehlt - wahrscheinlich hat dein Virenscanner es geloescht. Erlaube es dort und starte den Installer neu." }
 }
 
 Say ""
