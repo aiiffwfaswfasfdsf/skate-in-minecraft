@@ -608,6 +608,7 @@ public class SkateInGTA : Script
             greeted = true;
             Notification.Show("~g~Skate in GTA~s~ loaded. Press ~b~" + toggleKey + "~s~ to skate, ~b~" + helpKey + "~s~ for all controls.~n~Challenges done: " + ChallengesDone() + " / " + ChallengeIds.Length);
         }
+        DrawWatermark();
         UpdateSoundLoops();
         DrawFlash();
         if (showHelp) DrawHelp();
@@ -1853,6 +1854,14 @@ public class SkateInGTA : Script
         int next = Array.IndexOf(challengeDone, false);
         string goal = next < 0 ? "All challenges done! You're a legend." : "CHALLENGE " + (ChallengesDone() + 1) + "/" + ChallengeIds.Length + ": " + ChallengeTexts[next];
         new TextElement(goal, new PointF(20f, 20f), 0.38f, Color.FromArgb(150, 220, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
+    }
+
+    // Small badge bottom left: if you see it, the mod is loaded.
+    void DrawWatermark()
+    {
+        if (Game.IsPaused) return;
+        new TextElement("SKATE IN GTA  v0.7  made by Claude" + (riding ? "" : "  -  " + toggleKey + " = skate"), new PointF(12f, 694f), 0.3f,
+            Color.FromArgb(170, 255, 255, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
     static readonly string[] HelpLines =
