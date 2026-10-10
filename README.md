@@ -6,7 +6,7 @@ Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.4, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.5, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -47,7 +47,7 @@ ScriptHookVDotNet can compile a raw C# file when the game starts:
 
 ### Your first 5 minutes
 
-1. Press **K** on a quiet street. Hold **W** to push, steer with **A / D**.
+1. Press **H** any time to see all controls on screen. Press **K** on a quiet street. Hold **W** to push, steer with **A / D**.
 2. Hold **Space** and let go: ollie. Then try **Q** (kickflip).
 3. Find a curb or a bench, ride along it, ollie and land on its edge: you grind. Keep your balance with **A / D**.
 4. Now the real Skate way: **hold the left mouse button, pull the mouse toward you, flick it up-left**. That's a Flick-it kickflip.
@@ -123,7 +123,7 @@ Every gesture starts by pulling the stick **down**, which crouches you. Then you
 |---|---|---|
 | Manual (ride on the back wheels) | **Hold Ctrl** | Hold L3 |
 | Keep your balance in a manual | **W / S** | Left stick up / down |
-| Grab *(in the air)* | **Hold F** | Hold Y / △ |
+| Grab *(in the air)* | **Hold F** (+ **W** = nosegrab, + **S** = tailgrab) | Hold Y / △ |
 
 - **Manual:** a balance bar appears. Keep the marker in the middle with W / S. If it reaches the edge, you lose your balance and the combo.
 - **Combos like in Skate:** land while holding Ctrl to go straight into a manual, then ollie out of it into the next trick. The combo only counts when you roll away normally.
@@ -137,6 +137,7 @@ There are no special "grind rails": every edge in Los Santos works, including cu
 |---|---|
 | Start a grind | Ollie and land on an edge while riding along it |
 | 50-50 grind | Land with the board straight |
+| Nosegrind / 5-0 | Hold **W** / **S** while landing on the edge (harder balance, more points) |
 | Boardslide | Land with the board turned 90 degrees (spin a quarter turn with A / D) |
 | Keep your balance | **A / D** |
 | Ollie or flip out | **Space**, **Q / E / R** or a flick |
@@ -155,6 +156,7 @@ Hold **C** while rolling: the board turns sideways and you slide to a stop. Scor
 |---|---|
 | Cycle camera: Skate cam / **filmer cam** (low fisheye, the Skate look) / far cam | **V** |
 | Slow motion on / off | **B** |
+| Record a clip with GTA's Rockstar Editor | **F1** start / stop (GTA's own key) |
 
 ### Challenges
 

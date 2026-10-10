@@ -78,7 +78,7 @@ public class SkateInGTA : Script
     float rampDistance;
     float rampYawOffset;
 
-    Keys markerSetKey, markerReturnKey, rampKey, clearRampsKey, bailKey, slowMoKey, cameraKey;
+    Keys markerSetKey, markerReturnKey, rampKey, clearRampsKey, bailKey, slowMoKey, cameraKey, helpKey;
 
     bool soundEnabled;
     float soundVolume;
@@ -162,10 +162,13 @@ public class SkateInGTA : Script
     // grab
     bool grabbing;
     float grabTime;
+    string grabName;            // INDY GRAB, NOSEGRAB or TAILGRAB, picked by W / S when the grab starts
+    bool showHelp;
 
     // grind: 50-50 when you land straight on an edge, boardslide when you land turned 90 degrees
     bool grinding;
     bool grindSlide;
+    string grindName;           // 50-50, NOSEGRIND, 5-0 or BOARDSLIDE
     int grindSide;              // side the edge drops off on (-1 left, 1 right), used to hop off
     float grindDistance, grindTime, grindPoints, grindCooldown;
     ParticleEffect grindSparks;
@@ -272,6 +275,7 @@ public class SkateInGTA : Script
         bailKey = s.GetValue<Keys>("Controls", "BailKey", Keys.X);
         slowMoKey = s.GetValue<Keys>("Controls", "SlowMoKey", Keys.B);
         cameraKey = s.GetValue<Keys>("Controls", "CameraKey", Keys.V);
+        helpKey = s.GetValue<Keys>("Controls", "HelpKey", Keys.H);
 
         soundEnabled = s.GetValue<bool>("Sound", "Enabled", true);
         soundVolume = GetFloat(s, "Sound", "Volume", 0.7f);
@@ -371,6 +375,7 @@ public class SkateInGTA : Script
             Game.TimeScale = slowMo ? 0.4f : 1f;
             Screen.ShowSubtitle(slowMo ? "Slow motion ON" : "Slow motion OFF", 1000);
         }
+        else if (e.KeyCode == helpKey) showHelp = !showHelp;
         else if (e.KeyCode == cameraKey && riding)
         {
             camMode = (camMode + 1) % 3;
@@ -579,10 +584,11 @@ public class SkateInGTA : Script
         if (!greeted && !Game.IsLoading && Game.Player.Character.Exists())
         {
             greeted = true;
-            Notification.Show("~g~Skate in GTA~s~ loaded. Press ~b~" + toggleKey + "~s~ to skate.~n~Challenges done: " + ChallengesDone() + " / " + ChallengeIds.Length);
+            Notification.Show("~g~Skate in GTA~s~ loaded. Press ~b~" + toggleKey + "~s~ to skate, ~b~" + helpKey + "~s~ for all controls.~n~Challenges done: " + ChallengesDone() + " / " + ChallengeIds.Length);
         }
         UpdateSoundLoops();
         DrawFlash();
+        if (showHelp) DrawHelp();
         if (meatActive) UpdateHallOfMeat();
         if (!riding) return;
 
@@ -868,7 +874,12 @@ public class SkateInGTA : Script
         // Grab: hold F. Let go before you land!
         if (Pressed(Control.Enter))
         {
-            if (!grabbing) grabTime = 0f;
+            if (!grabbing)
+            {
+                float t = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown);
+                grabName = t > 0.5f ? "NOSEGRAB" : t < -0.5f ? "TAILGRAB" : "INDY GRAB";
+                grabTime = 0f;
+            }
             grabbing = true;
             grabTime += dt;
         }
@@ -1343,6 +1354,8 @@ public class SkateInGTA : Script
         heading -= turn;
         grinding = true;
         grindSlide = slide;
+        float lean = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown);
+        grindName = slide ? "BOARDSLIDE" : lean > 0.5f ? "NOSEGRIND" : lean < -0.5f ? "5-0 GRIND" : "50-50 GRIND";
         grindSide = e0 < 0f ? -1 : 1;
         grindDistance = 0f;
         grindTime = 0f;
@@ -1376,7 +1389,7 @@ public class SkateInGTA : Script
             return;
         }
 
-        if (UpdateBalance(dt, -steer, manualDifficulty * (grindSlide ? 1.1f : 0.7f)))
+        if (UpdateBalance(dt, -steer, manualDifficulty * (grindSlide ? 1.1f : grindName == "50-50 GRIND" ? 0.7f : 0.95f)))
         {
             Bail(grindSlide ? "Slipped off the boardslide." : "Lost balance on the grind.");
             return;
@@ -1429,7 +1442,7 @@ public class SkateInGTA : Script
         pos = onEdge;
         grindDistance += step;
         grindTime += dt;
-        grindPoints += (grindSlide ? 70f : 50f) * dt;
+        grindPoints += (grindSlide ? 70f : grindName == "50-50 GRIND" ? 50f : 65f) * dt;
     }
 
     // Leaves the grind and adds its points to the combo (without banking it).
@@ -1441,7 +1454,7 @@ public class SkateInGTA : Script
         airSpin = 0f;
         StopGrindSparks();
         int pts = (int)grindPoints + (int)(grindDistance * 10f);
-        AddTrickText(grindSlide ? "BOARDSLIDE" : "50-50 GRIND", pts);
+        AddTrickText(grindName, pts);
         if (grindSlide) comboTags.Add("BOARDSLIDE");
         if (grindDistance >= 3f) comboTags.Add("GRIND 3M");
     }
@@ -1501,7 +1514,7 @@ public class SkateInGTA : Script
     void EndGrab()
     {
         grabbing = false;
-        if (grabTime > 0.15f) AddTrickText("INDY GRAB", 20 + (int)(grabTime * 150f));
+        if (grabTime > 0.15f) AddTrickText(grabName, (grabName == "INDY GRAB" ? 20 : 30) + (int)(grabTime * 150f));
     }
 
     // ================================================================ rocket
@@ -1736,7 +1749,7 @@ public class SkateInGTA : Script
     // Skate-style readout of the running combo, plus score and the next challenge.
     void DrawTrickFeed()
     {
-        string live = manual ? "MANUAL" : grinding ? (grindSlide ? "BOARDSLIDE" : "50-50 GRIND") : powersliding ? "POWERSLIDE" : null;
+        string live = manual ? "MANUAL" : grinding ? grindName : powersliding ? "POWERSLIDE" : null;
         List<string> shown = new List<string>(comboTricks);
         if (live != null) shown.Add(live);
         if (shown.Count > 0)
@@ -1752,6 +1765,34 @@ public class SkateInGTA : Script
         int next = Array.IndexOf(challengeDone, false);
         string goal = next < 0 ? "All challenges done! You're a legend." : "CHALLENGE " + (ChallengesDone() + 1) + "/" + ChallengeIds.Length + ": " + ChallengeTexts[next];
         new TextElement(goal, new PointF(20f, 20f), 0.38f, Color.FromArgb(150, 220, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
+    }
+
+    static readonly string[] HelpLines =
+    {
+        "SKATE IN GTA - CONTROLS   (H = hide)",
+        "K  get on / off        W push   S brake   A / D steer",
+        "SPACE  hold + release = ollie (longer = higher)",
+        "Q kickflip   E heelflip   R shove-it",
+        "LEFT MOUSE hold + mouse down, then flick = Skate tricks",
+        "   up = ollie, up-left = kickflip, up-right = heelflip",
+        "   left / right = shove-its, left then up = 360 flip",
+        "A / D in the air = spin 180 / 360",
+        "F in the air = grab (+W nosegrab, +S tailgrab)",
+        "Land on rails, ledges, curbs = grind (A / D balance)",
+        "   hold W = nosegrind, S = 5-0, land turned 90 = boardslide",
+        "CTRL manual (W / S balance)   C powerslide",
+        "SHIFT rocket boost   SHIFT + ollie = rocket jump",
+        "J save spot   U back to spot   L spawn ramp   DEL remove ramps",
+        "V camera   B slow motion   X bail on purpose"
+    };
+
+    void DrawHelp()
+    {
+        Rect(0.2f, 0.5f, 0.38f, 0.04f + HelpLines.Length * 0.034f, 0, 0, 0, 170);
+        float y = 360f - HelpLines.Length * 12f;
+        for (int i = 0; i < HelpLines.Length; i++)
+            new TextElement(HelpLines[i], new PointF(30f, y + i * 24f), i == 0 ? 0.42f : 0.36f,
+                i == 0 ? Color.FromArgb(255, 230, 80) : Color.White, Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
     // ================================================================ challenges
@@ -1908,6 +1949,10 @@ public class SkateInGTA : Script
 
         if (manual) pitch += 12f + manualBalance * 10f; // tail down
         if (grinding) roll += manualBalance * 8f;       // wobble with your balance
+        if (grinding && grindName == "NOSEGRIND") pitch -= 14f;
+        if (grinding && grindName == "5-0 GRIND") pitch += 14f;
+        if (grabbing && grabName == "NOSEGRAB") pitch -= 12f;
+        if (grabbing && grabName == "TAILGRAB") pitch += 12f;
 
         anchor.PositionNoOffset = pos;
         anchor.Rotation = new Vector3(pitch, roll, visualYaw);
