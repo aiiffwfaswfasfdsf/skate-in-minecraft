@@ -253,6 +253,8 @@ public class SkateInGTA : Script
     };
 
     static readonly Random rng = new Random();
+    const string CrouchDict = "move_crouch_proto";      // same crouch the FiveM skate scripts use
+    const string CrouchClip = "idle_intro";
     const string RocketFxAsset = "veh_impexp_rocket";   // Rocket Voltic boost flames
     const string RocketFxName = "veh_rocket_boost";
     static readonly float[] RailCatch = { 0.12f, -0.12f, 0.24f, -0.24f };
@@ -482,6 +484,7 @@ public class SkateInGTA : Script
         camFov = 60f;
         if (rocketEnabled) new ParticleEffectAsset(RocketFxAsset).Request(); // load the flames now, not mid-boost
         new ParticleEffectAsset("core").Request();
+        Function.Call(Hash.REQUEST_ANIM_DICT, CrouchDict);
         riding = true;
 
         UpdateEntities(ped);
@@ -559,6 +562,7 @@ public class SkateInGTA : Script
         DeleteProps();
         DestroyCamera();
 
+        PlaySound("bail");
         Flash("BAIL!", reason + "   " + markerReturnKey + " = back to your spot, " + toggleKey + " = ride again", Color.FromArgb(255, 70, 70));
         FrontendSound("CHECKPOINT_MISSED", "HUD_MINI_GAME_SOUNDSET");
     }
@@ -625,6 +629,17 @@ public class SkateInGTA : Script
         TutorialTick();
 
         DisableOnFootControls();
+
+        foreach (Vehicle v in World.GetNearbyVehicles(ped.Position, 6f))
+        {
+            if (v.Speed > 3f && (ped.IsTouching(v) || v.Position.DistanceTo(ped.Position) < 1.6f))
+            {
+                Vector3 push = v.Velocity * 0.8f;
+                Bail("Hit by a car.");
+                ped.Velocity += push;
+                return;
+            }
+        }
 
         if (ped.IsInWater)
         {
@@ -717,6 +732,7 @@ public class SkateInGTA : Script
                 slideDir = steer < 0f ? -1 : 1;
             }
             slideTime += dt;
+            if ((int)(slideTime * 12f) != (int)((slideTime - dt) * 12f)) Dust("ped_foot_dusty", 0.5f); // ~12 puffs a second
             speed = Math.Max(0f, speed - 9f * dt);
         }
         else if (powersliding)
@@ -754,6 +770,7 @@ public class SkateInGTA : Script
         // Steering. Turning is a bit sharper at low speed, like a real board.
         float turnScale = 1.0f - 0.4f * Math.Min(speed / maxSpeed, 1f);
         heading -= steer * turnRate * turnScale * dt;
+        heading = ((heading % 360f) + 360f) % 360f;
 
         if (HandlePopInputs(dt)) return;
 
@@ -774,6 +791,18 @@ public class SkateInGTA : Script
         Vector3 next = pos + forward * step;
         float maxDrop = 0.35f + step;
         RaycastResult ground = World.Raycast(next + Vector3.WorldUp * 0.6f, next - Vector3.WorldUp * (maxDrop + 0.2f), GroundFlags, anchor);
+
+        if (ground.DidHit && ground.HitPosition.Z - pos.Z > 0.25f + step * 2f)
+        {
+            // Something knee-high in front (bench, planter, low wall): wheels can't roll up that.
+            if (speed > bailSpeed)
+            {
+                Bail("You ran into something.");
+                return;
+            }
+            speed = 0f;
+            return;
+        }
 
         if (ground.DidHit && ground.HitPosition.Z >= next.Z - maxDrop && ground.SurfaceNormal.Z > 0.45f)
         {
@@ -819,7 +848,8 @@ public class SkateInGTA : Script
         ollieCharge = 0f;
         if (manual) EndManual(); // ollie out of a manual or grind: the combo keeps going
         if (grinding) EndGrind();
-        PlaySound("pop");
+        PlaySound("pop", 0.6f + 0.4f * charge);
+        Dust("ped_foot_dusty", 0.6f);
 
         bool rocketJump = rocketEnabled && Pressed(Control.Sprint) && rocketFuel >= rocketJumpCost;
         if (rocketJump)
@@ -1280,7 +1310,8 @@ public class SkateInGTA : Script
         airSpin = 0f;
         speed = Math.Min(flatSpeed * 0.95f, rocketMaxSpeed);
         groundVz = 0f;
-        PlaySound("land");
+        PlaySound("land", Math.Max(0.35f, Math.Min(fallSpeed / 10f, 1f)));
+        if (fallSpeed > 4f) Dust("bang_concrete", Math.Min(fallSpeed / 8f, 1.5f));
         if (cam != null && fallSpeed > 7f) cam.Shake(CameraShake.Jolt, Math.Min(fallSpeed / 15f, 1f));
 
         if (sketchy)
@@ -1511,6 +1542,13 @@ public class SkateInGTA : Script
         int side = grindSide;
         EndGrind();
         Launch(fwd * speed * 0.8f + right * (side * 2.5f) + Vector3.WorldUp * 2f);
+    }
+
+    // One-shot dust / debris effect at the board, from GTA's always-loaded "core" effects.
+    void Dust(string effect, float scale)
+    {
+        ParticleEffectAsset core = new ParticleEffectAsset("core");
+        if (core.IsLoaded) World.CreateParticleEffectNonLooped(core, effect, pos, Vector3.Zero, scale, InvertAxisFlags.None);
     }
 
     void StopGrindSparks()
@@ -1918,7 +1956,10 @@ public class SkateInGTA : Script
         if (id == "push" && speed > 5f) Tutorial("push");
         else if (id == "steer")
         {
-            tutSteer += Math.Abs(heading - tutLastHeading);
+            float turned = heading - tutLastHeading;
+            if (turned > 180f) turned -= 360f;
+            if (turned < -180f) turned += 360f;
+            tutSteer += Math.Abs(turned);
             tutLastHeading = heading;
             if (tutSteer > 150f) Tutorial("steer");
         }
@@ -2009,10 +2050,10 @@ public class SkateInGTA : Script
     [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
     static extern int mciSendString(string command, System.Text.StringBuilder result, int resultLength, IntPtr callback);
 
-    static readonly string[] SoundNames = { "roll", "grind", "pop", "land", "flip" };
+    static readonly string[] SoundNames = { "roll", "grind", "slide", "pop", "land", "flip", "bail" };
     BlockingCollection<string> soundQueue;
-    bool rollPlaying, grindPlaying;
-    int rollVolume = -1, grindVolume = -1;
+    bool rollPlaying, grindPlaying, slidePlaying;
+    int rollVolume = -1, grindVolume = -1, slideVolume = -1;
 
     void StartSound()
     {
@@ -2049,7 +2090,15 @@ public class SkateInGTA : Script
 
     void PlaySound(string name)
     {
-        if (soundQueue != null) soundQueue.Add("play skate_" + name + " from 0");
+        PlaySound(name, 1f);
+    }
+
+    // level 0..1 on top of the volume from the ini, so hard landings sound harder.
+    void PlaySound(string name, float level)
+    {
+        if (soundQueue == null) return;
+        soundQueue.Add("setaudio skate_" + name + " volume to " + (int)(level * Math.Max(0f, Math.Min(soundVolume, 1f)) * 1000f));
+        soundQueue.Add("play skate_" + name + " from 0");
     }
 
     static void FrontendSound(string name, string set)
@@ -2063,9 +2112,11 @@ public class SkateInGTA : Script
         if (soundQueue == null) return;
         bool active = riding && !Game.IsPaused;
         float roll = active && !airborne && !grinding ? Math.Min(speed / 12f, 1f) : 0f;
-        float scrape = active && (grinding || powersliding) ? 1f : 0f;
+        float scrape = active && grinding ? 1f : 0f;
+        float slide = active && powersliding ? Math.Min(speed / 8f + 0.3f, 1f) : 0f;
         SetLoop("roll", roll, ref rollPlaying, ref rollVolume);
         SetLoop("grind", scrape, ref grindPlaying, ref grindVolume);
+        SetLoop("slide", slide, ref slidePlaying, ref slideVolume);
     }
 
     void SetLoop(string name, float level, ref bool playing, ref int lastVolume)
@@ -2119,7 +2170,8 @@ public class SkateInGTA : Script
         float crouch = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f) * 0.25f;
         if (grabbing) crouch = Math.Max(crouch, 0.4f);
         if (grinding || powersliding) crouch = Math.Max(crouch, 0.12f);
-        ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - crouch), new Vector3(0f, 0f, stanceYaw));
+        bool crouchAnim = Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, CrouchDict, CrouchClip, 3);
+        ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - (crouchAnim ? 0f : crouch)), new Vector3(0f, 0f, stanceYaw));
 
         if (board != null && board.Exists())
         {
@@ -2134,7 +2186,17 @@ public class SkateInGTA : Script
             board.AttachTo(anchor, new Vector3(0f, 0f, boardHeight + lift), new Vector3(0f, flipRoll, boardYawOffset + flipYaw));
         }
 
-        if (rideAnimDict.Length > 0 && !Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, rideAnimDict, rideAnimClip, 3)) PlayRideAnimation(ped);
+        // Crouched body pose while charging, grabbing or grinding; relaxed riding pose otherwise.
+        bool wantCrouch = crouch >= 0.1f;
+        if (wantCrouch && Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, CrouchDict))
+        {
+            if (!Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, CrouchDict, CrouchClip, 3))
+                ped.Task.PlayAnimation(CrouchDict, CrouchClip, 6f, -1, AnimationFlags.StayInEndFrame);
+        }
+        else if (rideAnimDict.Length > 0 && !Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, rideAnimDict, rideAnimClip, 3))
+        {
+            PlayRideAnimation(ped);
+        }
     }
 
     void UpdateCamera(float dt)

@@ -6,7 +6,7 @@ Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.6, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.7, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -197,7 +197,7 @@ When you bail, the mod scores your crash after you stop tumbling: distance, spee
 - A trick must finish before you touch the ground. Landing in the last bit of a flip still counts, but it's **sketchy**.
 - A spin must land straight or backwards (fakie). Up to 15 degrees off is clean, up to 35 is **sketchy**, more is a bail.
 - **Sketchy** landings keep the combo but halve it and slow you down.
-- Steep slopes, big drops, water, and fast wall hits make you **bail** (ragdoll). Press **U** to go back to your saved spot or **K** to get back on.
+- Steep slopes, big drops, water, fast hits on walls or benches, and **cars** make you **bail** (ragdoll). Press **U** to go back to your saved spot or **K** to get back on.
 
 **Score:** each trick adds points and raises the combo multiplier. A clean landing banks the combo; a bail loses it. The same trick twice in one combo is worth half, three times a quarter, so mix it up.
 
@@ -270,7 +270,7 @@ All the code is in one file, [`src/SkateInGTA.cs`](src/SkateInGTA.cs), with comm
 | Camera feels weird | Set `[Camera] UseSkateCam=false`. |
 | Rocket flames point up or sideways | Change `[Rocket] FlamePitch` or `FlameYaw` (try `90`, `-90` or `180`). |
 | Ramps face the wrong way | Set `[Ramps] YawOffset=180`. |
-| No board sounds | Check that `scripts\SkateInGTA\` contains the 5 `.wav` files from the zip. |
+| No board sounds | Check that `scripts\SkateInGTA\` contains all 7 `.wav` files from the zip (roll, grind, slide, pop, land, flip, bail). |
 | Grinds start when I don't want them | Land a bit further from curbs and ledges, or step off with **S**. |
 
 ---

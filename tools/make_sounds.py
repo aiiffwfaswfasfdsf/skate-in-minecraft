@@ -1,4 +1,4 @@
-"""Generates the board sounds in sounds/ (rolling, grinding, pop, land, flip).
+"""Generates the board sounds in sounds/ (rolling, grinding, powerslide, pop, land, flip, bail).
 
 Everything is synthesized from noise and sine waves, so the sounds are ours to share (MIT, like the code).
 Run: python tools/make_sounds.py   (needs numpy)
@@ -48,6 +48,13 @@ def roll_gain(f):
 roll = shaped_noise(2.0, roll_gain)
 t = np.arange(len(roll)) / RATE
 roll *= 1 + 0.15 * np.sin(2 * np.pi * 3 * t)  # 3 Hz wheel wobble, whole periods so it still loops
+roll /= np.max(np.abs(roll))
+# "tack-tack": the wheels rolling over a joint in the sidewalk, front then back truck
+for start in (0.31, 1.27):
+    for gap in (0.0, 0.11):
+        i = int((start + gap) * RATE)
+        tt, env = decay(0.06, 0.012)
+        roll[i:i + len(tt)] += 0.35 * (np.sin(2 * np.pi * 220 * tt) + 0.5 * rng.standard_normal(len(tt))) * env
 save("roll", roll, 0.6)
 
 # Grinding metal: noise through a few inharmonic resonances. Loops.
@@ -64,19 +71,42 @@ save("grind", grind, 0.5)
 t, env = decay(0.35, 0.04)
 click = rng.standard_normal(len(t)) * np.exp(-t / 0.003)
 tock = np.sin(2 * np.pi * 150 * t) * env + 0.6 * np.sin(2 * np.pi * 650 * t) * np.exp(-t / 0.025)
-save("pop", click * 0.8 + tock)
+scuff = shaped_noise(0.35, lambda f: band(f, 2500, 1200)) * np.exp(-t / 0.06) * 0.25  # griptape scuff
+save("pop", click * 0.8 + tock + scuff)
 
 # Land: low thud, wheels slapping down, board clack.
 t, env = decay(0.5, 0.12)
 thud = np.sin(2 * np.pi * 65 * t) * env
 clack = 0.7 * np.sin(2 * np.pi * 400 * t) * np.exp(-t / 0.03) + 0.4 * np.sin(2 * np.pi * 1100 * t) * np.exp(-t / 0.015)
 slap = rng.standard_normal(len(t)) * np.exp(-t / 0.02) * 0.5
-save("land", thud + clack + slap)
+rattle = np.zeros(len(t))
+for k, at in enumerate((0.04, 0.07, 0.095)):  # trucks rattling after the impact
+    i = int(at * RATE)
+    tt, env2 = decay(0.04, 0.008)
+    rattle[i:i + len(tt)] += (0.35 / (k + 1)) * np.sin(2 * np.pi * 1800 * tt) * env2
+save("land", thud + clack + slap + rattle)
 
 # Flip: short whoosh of the board spinning.
 n = int(RATE * 0.25)
 whoosh = shaped_noise(0.25, lambda f: band(f, 1400, 700))
 whoosh *= np.sin(np.linspace(0, np.pi, n)) ** 2
 save("flip", whoosh, 0.5)
+
+# Powerslide: urethane wheels scraping sideways over asphalt. Loops.
+slide = shaped_noise(1.0, lambda f: band(f, 900, 450) + 0.5 * band(f, 2200, 500) + 0.3 / (1 + (f / 300) ** 2))
+t = np.arange(len(slide)) / RATE
+slide *= 1 + 0.25 * np.sin(2 * np.pi * 7 * t)  # 7 Hz chatter
+save("slide", slide, 0.5)
+
+# Bail: the board tumbling away, a few clacks that get quieter.
+t = np.arange(int(RATE * 1.0)) / RATE
+bail = np.zeros(len(t))
+for k, at in enumerate((0.0, 0.18, 0.33, 0.47, 0.58, 0.67)):
+    i = int(at * RATE)
+    tt, env = decay(0.15, 0.03)
+    f = 300 + 120 * rng.random()
+    hit = np.sin(2 * np.pi * f * tt) + 0.5 * np.sin(2 * np.pi * f * 3.1 * tt) + 0.4 * rng.standard_normal(len(tt))
+    bail[i:i + len(tt)] += hit * env * (0.85 ** k)
+save("bail", bail, 0.8)
 
 print("sounds written to", os.path.abspath(OUT))
