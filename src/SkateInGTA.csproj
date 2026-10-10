@@ -8,7 +8,7 @@
     <RootNamespace>SkateInGTA</RootNamespace>
     <PlatformTarget>x64</PlatformTarget>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Product>Skate in GTA</Product>
     <Description>Skate-style skateboarding for GTA V Story Mode.</Description>
   </PropertyGroup>

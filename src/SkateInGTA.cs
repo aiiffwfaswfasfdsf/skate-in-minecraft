@@ -13,13 +13,19 @@
 //   * Raycasts (invisible laser beams) find the ground under the board and walls in front of it.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
 using GTA;
 using GTA.Math;
 using GTA.Native;
 using GTA.UI;
 using Control = GTA.Control;
+using Font = GTA.UI.Font;
 using Keys = System.Windows.Forms.Keys;
 
 public class SkateInGTA : Script
@@ -72,14 +78,16 @@ public class SkateInGTA : Script
     float rampDistance;
     float rampYawOffset;
 
-    Keys markerSetKey, markerReturnKey, rampKey, clearRampsKey;
+    Keys markerSetKey, markerReturnKey, rampKey, clearRampsKey, bailKey, slowMoKey, cameraKey;
+
+    bool soundEnabled;
+    float soundVolume;
 
     // Flick-it (Skate-style tricks by flicking a stick)
     bool flickEnabled;
     bool arrowFlick;        // arrow keys act as a stick
     bool mouseFlick;        // the mouse acts as a stick
     float mouseSensitivity;
-    float mouseReturn;      // how fast the mouse stick springs back to the middle
     bool invertMouseY;
     bool showStick;         // small on-screen stick so you can see your flicks
     float pedHeight;        // how high the player stands above the anchor
@@ -145,6 +153,7 @@ public class SkateInGTA : Script
 
     // manual: balance goes from -1 (nose down) to 1 (tail down); past either end you lose it
     bool manual;
+    float manualTime;
     float manualBalance;
     float manualNoise;
     float manualNoiseTimer;
@@ -153,6 +162,23 @@ public class SkateInGTA : Script
     // grab
     bool grabbing;
     float grabTime;
+
+    // grind: 50-50 when you land straight on an edge, boardslide when you land turned 90 degrees
+    bool grinding;
+    bool grindSlide;
+    int grindSide;              // side the edge drops off on (-1 left, 1 right), used to hop off
+    float grindDistance, grindTime, grindPoints, grindCooldown;
+    ParticleEffect grindSparks;
+
+    // powerslide (C)
+    bool powersliding;
+    float slideTime, slideYaw;
+    int slideDir;
+    float carve;                // smoothed steering, used to lean the board into turns
+
+    // camera modes and slow motion, for filming clips
+    int camMode;                // 0 = skate cam, 1 = filmer (low fisheye), 2 = far follow
+    bool slowMo;
 
     // session marker (Skate's "set spot / go back")
     bool markerSet;
@@ -174,10 +200,49 @@ public class SkateInGTA : Script
     int comboPoints;
     int comboMultiplier;
     int totalScore;
+    int bestCombo;
+    bool trickFromFlick;                                    // flick-it tricks score 1.5x
+    readonly List<string> comboTricks = new List<string>(); // shown in the trick feed
+    readonly HashSet<string> comboTags = new HashSet<string>(); // facts the challenges check
+
+    // HUD flash ("+1200", "BAIL!", "SKETCHY", ...)
+    string flashText, flashSub;
+    Color flashColor;
+    float flashTime;
+
+    // challenges, saved in scripts\SkateInGTA_progress.ini
+    ScriptSettings progress;
+    readonly bool[] challengeDone = new bool[ChallengeIds.Length];
+    bool greeted;
+
+    static readonly string[] ChallengeIds =
+    {
+        "ollie", "kickflip", "heelflip", "flick", "spin", "manual", "grind",
+        "boardslide", "flip360", "rocket", "combo5", "score5000", "meat"
+    };
+    static readonly string[] ChallengeTexts =
+    {
+        "Land an ollie (hold SPACE, release)",
+        "Land a kickflip (Q)",
+        "Land a heelflip (E)",
+        "Flick-it kickflip: hold left mouse, pull down, flick up-left",
+        "Land a 180 (hold A or D in the air)",
+        "Manual for 3 seconds (hold CTRL, balance with W / S)",
+        "Grind 3 meters on a rail, ledge or curb",
+        "Land a boardslide (land on a rail turned 90 degrees)",
+        "Land a 360 flip (flick: down, left, up)",
+        "Rocket jump and land a flip (SHIFT + SPACE, then Q)",
+        "Land a 5-trick combo",
+        "Score 5,000 in one combo",
+        "Hall of Meat: score 1,000 with a bail (X)"
+    };
+    static readonly string[] FlipTricks = { "KICKFLIP", "HEELFLIP", "POP SHOVE-IT", "FS SHOVE-IT", "360 FLIP", "VARIAL HEELFLIP" };
 
     static readonly Random rng = new Random();
     const string RocketFxAsset = "veh_impexp_rocket";   // Rocket Voltic boost flames
     const string RocketFxName = "veh_rocket_boost";
+    static readonly float[] RailCatch = { 0.12f, -0.12f, 0.24f, -0.24f };
+    static readonly float[] SurfaceSearch = { 0f, 0.06f, -0.06f, 0.12f, -0.12f, 0.2f, -0.2f };
     const float ChargeTime = 0.6f;          // seconds to fully charge an ollie
     const float FlickSettle = 0.07f;        // seconds to wait before reading a flick's direction
     const float FlickMinSideTime = 0.06f;   // the stick must rest on a side this long to count as a sweep
@@ -186,6 +251,8 @@ public class SkateInGTA : Script
     public SkateInGTA()
     {
         LoadSettings();
+        LoadProgress();
+        StartSound();
         Tick += OnTick;
         KeyDown += OnKeyDown;
         Aborted += OnAborted;
@@ -202,6 +269,12 @@ public class SkateInGTA : Script
         markerReturnKey = s.GetValue<Keys>("Controls", "MarkerReturnKey", Keys.U);
         rampKey = s.GetValue<Keys>("Controls", "RampKey", Keys.L);
         clearRampsKey = s.GetValue<Keys>("Controls", "ClearRampsKey", Keys.Delete);
+        bailKey = s.GetValue<Keys>("Controls", "BailKey", Keys.X);
+        slowMoKey = s.GetValue<Keys>("Controls", "SlowMoKey", Keys.B);
+        cameraKey = s.GetValue<Keys>("Controls", "CameraKey", Keys.V);
+
+        soundEnabled = s.GetValue<bool>("Sound", "Enabled", true);
+        soundVolume = GetFloat(s, "Sound", "Volume", 0.7f);
 
         rocketEnabled = s.GetValue<bool>("Rocket", "Enabled", true);
         rocketThrust = GetFloat(s, "Rocket", "Thrust", 16f);
@@ -259,7 +332,6 @@ public class SkateInGTA : Script
         arrowFlick = s.GetValue<bool>("FlickIt", "ArrowKeys", true);
         mouseFlick = s.GetValue<bool>("FlickIt", "Mouse", true);
         mouseSensitivity = GetFloat(s, "FlickIt", "MouseSensitivity", 0.5f);
-        mouseReturn = GetFloat(s, "FlickIt", "MouseReturn", 8f);
         invertMouseY = s.GetValue<bool>("FlickIt", "InvertMouseY", false);
         showStick = s.GetValue<bool>("FlickIt", "ShowStick", true);
 
@@ -292,6 +364,18 @@ public class SkateInGTA : Script
         else if (e.KeyCode == markerReturnKey) ReturnToMarker();
         else if (e.KeyCode == rampKey) SpawnRamp();
         else if (e.KeyCode == clearRampsKey) ClearRamps(true);
+        else if (e.KeyCode == bailKey && riding) Bail("Bailed on purpose.");
+        else if (e.KeyCode == slowMoKey)
+        {
+            slowMo = !slowMo;
+            Game.TimeScale = slowMo ? 0.4f : 1f;
+            Screen.ShowSubtitle(slowMo ? "Slow motion ON" : "Slow motion OFF", 1000);
+        }
+        else if (e.KeyCode == cameraKey && riding)
+        {
+            camMode = (camMode + 1) % 3;
+            Screen.ShowSubtitle(camMode == 0 ? "Skate cam" : camMode == 1 ? "Filmer cam (fisheye)" : "Far cam", 1000);
+        }
     }
 
     void StartRiding(bool ignoreRagdoll)
@@ -353,6 +437,7 @@ public class SkateInGTA : Script
         if (boardModel != null) boardModel.MarkAsNoLongerNeeded();
 
         ped.CanRagdoll = false;
+        ped.Weapons.Select(WeaponHash.Unarmed, true); // no skating with a rifle in your hand
         rider = ped;
         animGiveUpTime = DateTime.Now.AddSeconds(3);
         PlayRideAnimation(ped);
@@ -368,15 +453,12 @@ public class SkateInGTA : Script
         flickNeedsCenter = true;
         mouseStickX = 0f;
         mouseStickY = 0f;
-        trickName = null;
-        comboPoints = 0;
-        comboMultiplier = 0;
+        ResetMoves();
         boosting = false;
-        manual = false;
-        grabbing = false;
         meatActive = false;
         camFov = 60f;
         if (rocketEnabled) new ParticleEffectAsset(RocketFxAsset).Request(); // load the flames now, not mid-boost
+        new ParticleEffectAsset("core").Request();
         riding = true;
 
         UpdateEntities(ped);
@@ -388,7 +470,7 @@ public class SkateInGTA : Script
             World.RenderingCamera = cam;
         }
 
-        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer, SPACE ollie~n~Q/E/R flips, arrows = flick tricks~n~SHIFT rocket, SHIFT+SPACE rocket jump~n~CTRL manual, F grab (in air)~n~" + toggleKey + " = get off");
+        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer, SPACE ollie~n~Q/E/R flips, hold LMB + flick mouse = Skate tricks~n~SHIFT rocket, CTRL manual, F grab, C powerslide~n~Land on rails / ledges / curbs to grind~n~" + cameraKey + " camera, " + slowMoKey + " slow-mo, " + bailKey + " bail, " + toggleKey + " get off");
     }
 
     // Ends the session cleanly. Used for hopping off, dying, entering a car, or the script unloading.
@@ -403,11 +485,28 @@ public class SkateInGTA : Script
             ped.Detach();
             ped.CanRagdoll = true;
             ped.Task.ClearAll();
-            if (!ped.IsDead) ped.Position = pos;
+            if (!ped.IsDead) ped.Position = pos + Vector3.WorldUp; // ped position is its hips, ~1 m above the feet
         }
 
+        ResetMoves();
         DeleteProps();
         DestroyCamera();
+    }
+
+    // Clears every trick / move state. Points of an unfinished combo are lost.
+    void ResetMoves()
+    {
+        trickName = null;
+        manual = false;
+        grabbing = false;
+        grinding = false;
+        powersliding = false;
+        slideYaw = 0f;
+        StopGrindSparks();
+        comboPoints = 0;
+        comboMultiplier = 0;
+        comboTricks.Clear();
+        comboTags.Clear();
     }
 
     void Bail(string reason)
@@ -422,8 +521,7 @@ public class SkateInGTA : Script
         ped.Ragdoll(2500, RagdollType.Balance);
         ped.Velocity = velocity;
         StartHallOfMeat(ped, velocity);
-        manual = false;
-        grabbing = false;
+        ResetMoves();
 
         // Let the board fly away on its own physics, then let the game clean it up.
         if (board != null && board.Exists())
@@ -438,13 +536,14 @@ public class SkateInGTA : Script
         DeleteProps();
         DestroyCamera();
 
-        comboPoints = 0;
-        comboMultiplier = 0;
-        Screen.ShowSubtitle("~r~BAIL!~s~ " + reason + " (press " + toggleKey + " to ride again)", 3000);
+        Flash("BAIL!", reason + "   " + markerReturnKey + " = back to your spot, " + toggleKey + " = ride again", Color.FromArgb(255, 70, 70));
+        FrontendSound("CHECKPOINT_MISSED", "HUD_MINI_GAME_SOUNDSET");
     }
 
     void OnAborted(object sender, EventArgs e)
     {
+        if (slowMo) Game.TimeScale = 1f;
+        StopSound();
         if (riding) StopRiding();
         else
         {
@@ -477,6 +576,13 @@ public class SkateInGTA : Script
 
     void OnTick(object sender, EventArgs e)
     {
+        if (!greeted && !Game.IsLoading && Game.Player.Character.Exists())
+        {
+            greeted = true;
+            Notification.Show("~g~Skate in GTA~s~ loaded. Press ~b~" + toggleKey + "~s~ to skate.~n~Challenges done: " + ChallengesDone() + " / " + ChallengeIds.Length);
+        }
+        UpdateSoundLoops();
+        DrawFlash();
         if (meatActive) UpdateHallOfMeat();
         if (!riding) return;
 
@@ -491,6 +597,7 @@ public class SkateInGTA : Script
         float dt = Game.LastFrameTime;
         if (dt <= 0f) return;
         if (dt > 0.05f) dt = 0.05f; // avoid huge jumps after a lag spike
+        if (grindCooldown > 0f) grindCooldown -= dt;
 
         DisableOnFootControls();
 
@@ -512,6 +619,7 @@ public class SkateInGTA : Script
         UpdateCamera(dt);
         DrawStick();
         DrawHud();
+        DrawTrickFeed();
     }
 
     // Stop GTA from using our buttons for running, jumping, punching, etc.
@@ -535,25 +643,64 @@ public class SkateInGTA : Script
 
     void UpdateGround(float dt)
     {
+        if (grinding)
+        {
+            UpdateGrind(dt);
+            return;
+        }
+
         float steer = Game.GetDisabledControlValueNormalized(Control.MoveLeftRight);  // -1 left .. 1 right
         float throttle = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown); // 1 = W / stick up
 
         // Manual: hold CTRL to roll on the back wheels. W / S keep your balance instead of pushing.
         if (manual)
         {
-            if (!Pressed(Control.Duck))
+            if (!Pressed(Control.Duck) || speed < 1f)
             {
                 EndManual();
                 BankCombo();
             }
-            else if (UpdateManualBalance(dt, throttle))
+            else if (UpdateBalance(dt, throttle, manualDifficulty))
             {
+                manual = false;
+                comboPoints = 0;
+                comboMultiplier = 0;
+                comboTricks.Clear();
+                comboTags.Clear();
+                Flash("LOST BALANCE", "combo lost", Color.FromArgb(255, 70, 70));
                 return;
             }
+            else
+            {
+                manualPoints += manualPointsPerSecond * dt;
+                manualTime += dt;
+            }
         }
-        else if (Pressed(Control.Duck))
+        else if (Pressed(Control.Duck) && speed > 2f)
         {
             StartManual();
+        }
+
+        // Powerslide: hold C while rolling. Slows you down fast, looks cool, scores a little.
+        if (Pressed(Control.LookBehind) && speed > 3f && !manual)
+        {
+            if (!powersliding)
+            {
+                powersliding = true;
+                slideTime = 0f;
+                slideDir = steer < 0f ? -1 : 1;
+            }
+            slideTime += dt;
+            speed = Math.Max(0f, speed - 9f * dt);
+        }
+        else if (powersliding)
+        {
+            powersliding = false;
+            if (slideTime > 0.4f)
+            {
+                AddTrickText("POWERSLIDE", 30 + (int)(slideTime * 40f));
+                BankCombo();
+            }
         }
 
         // Push and brake.
@@ -582,23 +729,7 @@ public class SkateInGTA : Script
         float turnScale = 1.0f - 0.4f * Math.Min(speed / maxSpeed, 1f);
         heading -= steer * turnRate * turnScale * dt;
 
-        // Ollie: hold to crouch, release to pop.
-        if (jumpLatch && !Pressed(Control.Jump)) jumpLatch = false;
-        if (!jumpLatch && Pressed(Control.Jump))
-        {
-            ollieCharge = Math.Min(ollieCharge + dt / ChargeTime, 1f);
-        }
-        else if (ollieCharge > 0f)
-        {
-            if (!Pop(ollieCharge)) AddTrickText("OLLIE", 0);
-            return;
-        }
-
-        // One-key tricks: Q / E / R pop and flip in one go (you can still hold SPACE first for a higher pop).
-        if (TryButtonTrick(true)) return;
-
-        // Flick-it: Skate-style stick gestures.
-        if (UpdateFlick(dt)) return;
+        if (HandlePopInputs(dt)) return;
 
         // Walls: look a little ahead of the board.
         float step = speed * dt;
@@ -633,6 +764,26 @@ public class SkateInGTA : Script
         }
     }
 
+    // Ollie (hold SPACE, release), one-key tricks (Q / E / R) and Flick-it. Returns true if we popped.
+    bool HandlePopInputs(float dt)
+    {
+        if (jumpLatch && !Pressed(Control.Jump)) jumpLatch = false;
+        if (!jumpLatch && Pressed(Control.Jump))
+        {
+            ollieCharge = Math.Min(ollieCharge + dt / ChargeTime, 1f);
+        }
+        else if (ollieCharge > 0f)
+        {
+            if (!Pop(ollieCharge)) AddTrickText("OLLIE", 0);
+            return true;
+        }
+
+        // One-key tricks pop and flip in one go (hold SPACE first for a higher pop).
+        if (TryButtonTrick(true)) return true;
+
+        return UpdateFlick(dt);
+    }
+
     // Jump off the ground. charge 0..1 decides how high. Holding the rocket button makes it a
     // rocket jump, like the Scramjet's jump. Returns true for a rocket jump.
     bool Pop(float charge)
@@ -640,7 +791,9 @@ public class SkateInGTA : Script
         float pop = ollieMin + (ollieMax - ollieMin) * charge;
         if (Pressed(Control.Jump)) jumpLatch = true;
         ollieCharge = 0f;
-        if (manual) EndManual(); // ollie out of a manual: the combo keeps going
+        if (manual) EndManual(); // ollie out of a manual or grind: the combo keeps going
+        if (grinding) EndGrind();
+        PlaySound("pop");
 
         bool rocketJump = rocketEnabled && Pressed(Control.Sprint) && rocketFuel >= rocketJumpCost;
         if (rocketJump)
@@ -649,6 +802,7 @@ public class SkateInGTA : Script
             rocketFuel -= rocketJumpCost;
             rocketCooldown = rocketRechargeDelay;
             AddTrickText("ROCKET JUMP", 50);
+            comboTags.Add("ROCKET");
         }
         Launch(ForwardFromHeading(heading) * speed + Vector3.WorldUp * (pop + Math.Max(groundVz, 0f)));
         return rocketJump;
@@ -667,6 +821,7 @@ public class SkateInGTA : Script
 
         if (onGround) Pop(Math.Max(ollieCharge, 0.5f));
         StartNamedTrick(name);
+        trickFromFlick = false;
         return onGround;
     }
 
@@ -675,6 +830,7 @@ public class SkateInGTA : Script
         airborne = true;
         airVelocity = velocity;
         airSpin = 0f;
+        powersliding = false;
         pos += Vector3.WorldUp * 0.05f;
     }
 
@@ -689,11 +845,12 @@ public class SkateInGTA : Script
         }
         else if (spinAssist > 0f)
         {
-            // Spin assist: when you let go, finish the turn to the nearest 0 / 180 / 360...
+            // Spin assist: when you let go close to 0 / 180 / 360..., it finishes the last bit for you.
+            // Only the last 30 degrees, so you still have to commit to the spin yourself.
             float target = (float)Math.Round(airSpin / 180f) * 180f;
             float diff = target - airSpin;
             float stepDeg = spinAssist * dt;
-            airSpin += Math.Abs(diff) <= stepDeg ? diff : Math.Sign(diff) * stepDeg;
+            if (Math.Abs(diff) <= 30f) airSpin += Math.Abs(diff) <= stepDeg ? diff : Math.Sign(diff) * stepDeg;
         }
 
         // Start a flip trick if none is running.
@@ -705,12 +862,7 @@ public class SkateInGTA : Script
         {
             UpdateFlick(dt); // keep the gesture state up to date
             trickTime += dt / (trickDuration * trickScale);
-            if (trickTime >= 1f)
-            {
-                AddTrickText(trickName, trickPoints);
-                trickName = null;
-                trickTime = 0f;
-            }
+            if (trickTime >= 1f) CompleteTrick();
         }
 
         // Grab: hold F. Let go before you land!
@@ -758,6 +910,18 @@ public class SkateInGTA : Script
         if (airVelocity.Z <= 0f)
         {
             RaycastResult ground = World.Raycast(new Vector3(next.X, next.Y, pos.Z + 0.5f), next - Vector3.WorldUp * 0.05f, GroundFlags, anchor);
+            if (!ground.DidHit && grindCooldown <= 0f && trickName == null && !grabbing && -airVelocity.Z <= maxLandingSpeed)
+            {
+                // Thin rails are easy to miss with one ray, so look a little to the sides too ("rail magnet").
+                Vector3 fwd = ForwardFromHeading(heading);
+                Vector3 right = new Vector3(fwd.Y, -fwd.X, 0f);
+                foreach (float side in RailCatch)
+                {
+                    Vector3 q = next + right * side;
+                    RaycastResult r = World.Raycast(new Vector3(q.X, q.Y, pos.Z + 0.5f), q - Vector3.WorldUp * 0.05f, GroundFlags, anchor);
+                    if (r.DidHit && TryStartGrind(r, flatSpeed)) return;
+                }
+            }
             if (ground.DidHit)
             {
                 Land(ground, flatSpeed);
@@ -768,8 +932,18 @@ public class SkateInGTA : Script
         pos = next;
     }
 
+    void CompleteTrick()
+    {
+        int points = trickFromFlick ? trickPoints * 3 / 2 : trickPoints;
+        if (trickFromFlick) comboTags.Add("FLICK " + trickName);
+        AddTrickText(trickName, points);
+        trickName = null;
+        trickTime = 0f;
+    }
+
     void StartTrick(string name, float roll, float yaw, int points, float scale)
     {
+        PlaySound("flip");
         trickName = name;
         trickTime = 0f;
         trickRoll = roll;
@@ -805,11 +979,14 @@ public class SkateInGTA : Script
         stickX = 0f;
         stickY = 0f;
 
-        // The mouse stick moves with the mouse and springs back to the middle on its own.
-        float back = (float)Math.Exp(-mouseReturn * dt);
-        mouseStickX *= back;
-        mouseStickY *= back;
-        if (mouseFlick)
+        // Hold the left mouse button to grab the "stick" with the mouse; let go and it snaps back
+        // to the middle. Same idea as skate.'s hidden mouse controls, and no accidental tricks.
+        if (!mouseFlick || !Pressed(Control.Attack))
+        {
+            mouseStickX = 0f;
+            mouseStickY = 0f;
+        }
+        else
         {
             mouseStickX += Game.GetDisabledControlValueNormalized(Control.LookLeftRight) * mouseSensitivity;
             mouseStickY -= Game.GetDisabledControlValueNormalized(Control.LookUpDown) * mouseSensitivity * (invertMouseY ? -1f : 1f);
@@ -970,6 +1147,7 @@ public class SkateInGTA : Script
         else if (trickName == null)
         {
             StartNamedTrick(name);
+            trickFromFlick = true;
         }
         return popped;
     }
@@ -995,11 +1173,17 @@ public class SkateInGTA : Script
     {
         pos = ground.HitPosition;
         groundNormal = ground.SurfaceNormal;
+        bool sketchy = false;
 
         if (trickName != null)
         {
-            Bail("Didn't finish the " + trickName.ToLower() + ".");
-            return;
+            if (trickTime < 0.85f)
+            {
+                Bail("Didn't finish the " + trickName.ToLower() + ".");
+                return;
+            }
+            CompleteTrick(); // almost done: you land it, but it's sketchy
+            sketchy = true;
         }
         if (grabbing)
         {
@@ -1011,6 +1195,7 @@ public class SkateInGTA : Script
             Bail("That drop was too big.");
             return;
         }
+        if (!sketchy && TryStartGrind(ground, flatSpeed)) return;
         if (ground.SurfaceNormal.Z < 0.6f)
         {
             Bail("Landed on a slope that's too steep.");
@@ -1026,14 +1211,30 @@ public class SkateInGTA : Script
             Bail("Landed sideways.");
             return;
         }
+        if (Math.Min(offStraight, offBackward) > 15f) sketchy = true;
         int halfTurns = (int)Math.Round(Math.Abs(airSpin) / 180f);
-        if (halfTurns > 0) AddTrickText((halfTurns * 180) + (offBackward < offStraight ? " (FAKIE)" : ""), halfTurns * 75);
+        if (halfTurns > 0)
+        {
+            AddTrickText((halfTurns * 180) + (offBackward < offStraight ? " (FAKIE)" : ""), halfTurns * 75);
+            comboTags.Add("SPIN");
+        }
         if (offBackward < offStraight) fakie = !fakie;
 
+        float fallSpeed = -airVelocity.Z;
         airborne = false;
         airSpin = 0f;
         speed = Math.Min(flatSpeed * 0.95f, rocketMaxSpeed);
         groundVz = 0f;
+        PlaySound("land");
+        if (cam != null && fallSpeed > 7f) cam.Shake(CameraShake.Jolt, Math.Min(fallSpeed / 15f, 1f));
+
+        if (sketchy)
+        {
+            // Sloppy landing: you keep the combo, but only half of it, and you lose speed.
+            comboPoints /= 2;
+            speed *= 0.6f;
+            Flash("SKETCHY", "land straighter for full points", Color.FromArgb(255, 170, 40));
+        }
 
         // Landing in a manual (holding CTRL) keeps the combo going, like in Skate.
         if (Pressed(Control.Duck)) StartManual();
@@ -1042,14 +1243,222 @@ public class SkateInGTA : Script
 
     void BankCombo()
     {
-        if (comboPoints > 0)
+        int earned = comboPoints * Math.Max(comboMultiplier, 1);
+        if (earned > 0)
         {
-            int earned = comboPoints * Math.Max(comboMultiplier, 1);
             totalScore += earned;
-            Screen.ShowSubtitle("~g~LANDED!~s~ +" + earned + "   Score: " + totalScore, 2500);
+            bool record = earned > bestCombo;
+            if (record)
+            {
+                bestCombo = earned;
+                progress.SetValue("Stats", "BestCombo", bestCombo);
+                progress.Save();
+            }
+            Flash("+" + earned, record ? "NEW BEST COMBO!" : string.Join(" + ", comboTricks.ToArray()), Color.FromArgb(90, 255, 120));
+            if (earned >= 1000) FrontendSound("CHECKPOINT_PERFECT", "HUD_MINI_GAME_SOUNDSET");
+            else FrontendSound("CHECKPOINT_NORMAL", "HUD_MINI_GAME_SOUNDSET");
         }
+        CheckComboChallenges(earned);
         comboPoints = 0;
         comboMultiplier = 0;
+        comboTricks.Clear();
+        comboTags.Clear();
+    }
+
+    // ================================================================ grinds
+    //
+    // There is no "rail" in GTA's map data, so we find edges ourselves: an edge is where the
+    // surface we stand on ends and the ground beside it is clearly lower (rails, ledges, benches,
+    // curbs, spawned prop_skate_rail). Land on one while moving along it and you grind it.
+
+    // Lateral offset (meters, along `right`) of the nearest edge of the surface at height topZ,
+    // or NaN if there is no surface under p or no edge within reach * 10 cm.
+    float FindEdge(Vector3 p, Vector3 right, float topZ, int reach)
+    {
+        if (!Supported(p, topZ)) return float.NaN;
+        for (int i = 1; i <= reach; i++)
+        {
+            float d = i * 0.1f;
+            if (!Supported(p - right * d, topZ)) return -(d - 0.05f);
+            if (!Supported(p + right * d, topZ)) return d - 0.05f;
+        }
+        return float.NaN;
+    }
+
+    // Finds a surface at about height z under p, searching a little to the sides for thin rails.
+    // offset = how far to the side it was found (along `right`).
+    bool FindSurfaceNear(Vector3 p, Vector3 right, float z, out RaycastResult hit, out float offset)
+    {
+        foreach (float o in SurfaceSearch)
+        {
+            Vector3 q = p + right * o;
+            hit = World.Raycast(new Vector3(q.X, q.Y, z + 0.5f), new Vector3(q.X, q.Y, z - 0.5f), GroundFlags, anchor);
+            if (hit.DidHit && Math.Abs(hit.HitPosition.Z - z) < 0.3f)
+            {
+                offset = o;
+                return true;
+            }
+        }
+        hit = default(RaycastResult);
+        offset = 0f;
+        return false;
+    }
+
+    // True if there is a surface at about height topZ under p (not more than 12 cm lower).
+    bool Supported(Vector3 p, float topZ)
+    {
+        RaycastResult hit = World.Raycast(new Vector3(p.X, p.Y, topZ + 0.4f), new Vector3(p.X, p.Y, topZ - 0.5f), GroundFlags, anchor);
+        return hit.DidHit && hit.HitPosition.Z > topZ - 0.12f;
+    }
+
+    bool TryStartGrind(RaycastResult ground, float flatSpeed)
+    {
+        if (grindCooldown > 0f || flatSpeed < 2f) return false;
+
+        Vector3 fwd = ForwardFromHeading(heading);
+        Vector3 right = new Vector3(fwd.Y, -fwd.X, 0f);
+        Vector3 p0 = ground.HitPosition;
+        float e0 = FindEdge(p0, right, p0.Z, 3); // land within 30 cm of the edge
+        if (float.IsNaN(e0)) return false;
+
+        // The edge must continue ahead of us, and we must travel along it (within 30 degrees).
+        RaycastResult ahead;
+        float aheadOffset;
+        if (!FindSurfaceNear(p0 + fwd * 0.6f, right, p0.Z, out ahead, out aheadOffset)) return false;
+        float e1 = FindEdge(ahead.HitPosition, right, ahead.HitPosition.Z, 3);
+        if (float.IsNaN(e1)) return false;
+        Vector3 edgeDir = (ahead.HitPosition + right * e1) - (p0 + right * e0);
+        float turn = RadToDeg((float)Math.Atan2(Vector3.Dot(edgeDir, right), Vector3.Dot(edgeDir, fwd)));
+        if (Math.Abs(turn) > 30f) return false;
+
+        // Board angle decides the grind: straight (or fakie) = 50-50, turned 90 degrees = boardslide.
+        float a = ((airSpin % 360f) + 360f) % 360f;
+        float off180 = Math.Min(a % 180f, 180f - a % 180f);
+        bool slide;
+        if (off180 <= landTolerance) slide = false;
+        else if (Math.Abs(off180 - 90f) <= landTolerance) slide = true;
+        else return false;
+        if (!slide && Math.Abs(a - 180f) < 90f) fakie = !fakie;
+
+        heading -= turn;
+        grinding = true;
+        grindSlide = slide;
+        grindSide = e0 < 0f ? -1 : 1;
+        grindDistance = 0f;
+        grindTime = 0f;
+        grindPoints = 0f;
+        manualBalance = (float)(rng.NextDouble() - 0.5) * 0.1f;
+        manualNoiseTimer = 0f;
+        airborne = false;
+        airSpin = slide ? 90f : 0f;
+        pos = p0;
+        groundNormal = Vector3.WorldUp;
+        speed = Math.Min(flatSpeed * 0.9f, rocketMaxSpeed);
+        PlaySound("land");
+
+        ParticleEffectAsset core = new ParticleEffectAsset("core");
+        if (core.IsLoaded)
+            grindSparks = World.CreateParticleEffect(core, "veh_train_sparks", anchor, new Vector3(0f, 0f, 0.05f), Vector3.Zero, 0.6f, InvertAxisFlags.None);
+        return true;
+    }
+
+    void UpdateGrind(float dt)
+    {
+        float steer = Game.GetDisabledControlValueNormalized(Control.MoveLeftRight);
+        float throttle = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown);
+        Vector3 fwd = ForwardFromHeading(heading);
+        Vector3 right = new Vector3(fwd.Y, -fwd.X, 0f);
+
+        if (HandlePopInputs(dt)) return;   // ollie or flip out of the grind (Pop ends it)
+        if (throttle < -0.5f || speed < 1.5f)
+        {
+            HopOffGrind();                 // S steps off, like the brake button in Skate
+            return;
+        }
+
+        if (UpdateBalance(dt, -steer, manualDifficulty * (grindSlide ? 1.1f : 0.7f)))
+        {
+            Bail(grindSlide ? "Slipped off the boardslide." : "Lost balance on the grind.");
+            return;
+        }
+
+        speed -= speed * 0.3f * dt;        // grinding is slower than rolling
+        if (boosting && speed < rocketMaxSpeed) speed += rocketThrust * dt;
+
+        float step = speed * dt;
+        if (HitWall(pos, fwd, step + 0.45f))
+        {
+            if (speed > bailSpeed)
+            {
+                Bail("You hit a wall.");
+                return;
+            }
+            HopOffGrind();
+            return;
+        }
+
+        Vector3 next = pos + fwd * step;
+        RaycastResult top;
+        float off;
+        if (!FindSurfaceNear(next, right, pos.Z, out top, out off))
+        {
+            // End of the rail: keep the speed and fly off it.
+            EndGrind();
+            pos = next;
+            Launch(fwd * speed + Vector3.WorldUp * 1.5f);
+            return;
+        }
+        if (off != 0f) heading -= RadToDeg((float)Math.Atan2(off, 1f)); // steer along a rail that bends or sits at an angle
+
+        float edge = FindEdge(top.HitPosition, right, top.HitPosition.Z, 5);
+        if (float.IsNaN(edge))
+        {
+            // The edge ended but the surface goes on: just roll away.
+            EndGrind();
+            pos = top.HitPosition;
+            groundNormal = top.SurfaceNormal;
+            return;
+        }
+
+        // Stay on the edge: on wide ledges slide toward it (10 cm inside), on thin rails we are already there.
+        Vector3 onEdge = top.HitPosition;
+        if (Math.Abs(edge) > 0.06f) onEdge += right * ((edge - Math.Sign(edge) * 0.1f) * Math.Min(dt * 8f, 1f));
+
+        // Handrails go down stairs: gravity speeds you up there, like on a hill.
+        speed -= gravity * ((onEdge.Z - pos.Z) / Math.Max(step, 0.01f)) * slopeFactor * dt;
+        pos = onEdge;
+        grindDistance += step;
+        grindTime += dt;
+        grindPoints += (grindSlide ? 70f : 50f) * dt;
+    }
+
+    // Leaves the grind and adds its points to the combo (without banking it).
+    void EndGrind()
+    {
+        if (!grinding) return;
+        grinding = false;
+        grindCooldown = 0.35f;
+        airSpin = 0f;
+        StopGrindSparks();
+        int pts = (int)grindPoints + (int)(grindDistance * 10f);
+        AddTrickText(grindSlide ? "BOARDSLIDE" : "50-50 GRIND", pts);
+        if (grindSlide) comboTags.Add("BOARDSLIDE");
+        if (grindDistance >= 3f) comboTags.Add("GRIND 3M");
+    }
+
+    void HopOffGrind()
+    {
+        Vector3 fwd = ForwardFromHeading(heading);
+        Vector3 right = new Vector3(fwd.Y, -fwd.X, 0f);
+        int side = grindSide;
+        EndGrind();
+        Launch(fwd * speed * 0.8f + right * (side * 2.5f) + Vector3.WorldUp * 2f);
+    }
+
+    void StopGrindSparks()
+    {
+        if (grindSparks != null && grindSparks.Exists()) grindSparks.Delete();
+        grindSparks = null;
     }
 
     // ================================================================ manuals and grabs
@@ -1060,12 +1469,12 @@ public class SkateInGTA : Script
         manualBalance = (float)(rng.NextDouble() - 0.5) * 0.1f;
         manualNoiseTimer = 0f;
         manualPoints = 0f;
-        comboMultiplier++;
-        AddTrickText("MANUAL", 0);
+        manualTime = 0f;
     }
 
-    // Returns true if you lost your balance.
-    bool UpdateManualBalance(float dt, float throttle)
+    // Shared balance mini-game for manuals and grinds. Returns true if you lost your balance.
+    // input pushes the marker: W / S in a manual, A / D on a grind.
+    bool UpdateBalance(float dt, float input, float difficulty)
     {
         manualNoiseTimer -= dt;
         if (manualNoiseTimer <= 0f)
@@ -1073,18 +1482,10 @@ public class SkateInGTA : Script
             manualNoise = (float)(rng.NextDouble() * 2.0 - 1.0);
             manualNoiseTimer = 0.3f;
         }
-        // The further you lean, the faster you tip over. W leans forward, S leans back.
-        manualBalance += (manualBalance * 1.2f + manualNoise * 0.6f) * manualDifficulty * dt;
-        manualBalance -= throttle * 2.2f * dt;
-        manualPoints += manualPointsPerSecond * dt;
-
-        if (Math.Abs(manualBalance) <= 1f) return false;
-
-        manual = false;
-        comboPoints = 0;
-        comboMultiplier = 0;
-        Screen.ShowSubtitle("~r~LOST BALANCE~s~ combo lost", 2000);
-        return true;
+        // The further you lean, the faster you tip over.
+        manualBalance += (manualBalance * 1.2f + manualNoise * 0.6f) * difficulty * dt;
+        manualBalance -= input * 2.2f * dt;
+        return Math.Abs(manualBalance) > 1f;
     }
 
     // Leaves the manual and adds its points to the combo (without banking it).
@@ -1094,6 +1495,7 @@ public class SkateInGTA : Script
         int pts = (int)manualPoints;
         manualPoints = 0f;
         if (pts > 0) AddTrickText("MANUAL", pts);
+        if (manualTime >= 3f) comboTags.Add("MANUAL 3S");
     }
 
     void EndGrab()
@@ -1176,11 +1578,7 @@ public class SkateInGTA : Script
             airborne = false;
             airSpin = 0f;
             fakie = false;
-            trickName = null;
-            manual = false;
-            grabbing = false;
-            comboPoints = 0;
-            comboMultiplier = 0;
+            ResetMoves();
             camPos = pos - ForwardFromHeading(heading) * camDistance + Vector3.WorldUp * camHeight;
             return;
         }
@@ -1257,8 +1655,10 @@ public class SkateInGTA : Script
         meatActive = false;
         int damage = Math.Max(0, meatHealth - meatPed.Health);
         int score = (int)(meatDistance * 25f + meatSpeed * 15f + damage * 10f);
-        Screen.ShowSubtitle("~r~HALL OF MEAT~s~   " + meatDistance.ToString("0.0", CultureInfo.InvariantCulture) + " m, "
-            + damage + " damage = ~y~" + score + "~s~ pts", 4000);
+        Flash("HALL OF MEAT: " + score, meatDistance.ToString("0.0", CultureInfo.InvariantCulture) + " m, " + damage + " damage",
+            Color.FromArgb(255, 110, 110));
+        FrontendSound("MEDAL_UP", "HUD_MINI_GAME_SOUNDSET");
+        if (score >= 1000) CompleteChallenge("meat");
     }
 
     Vector3 SnapToGround(Vector3 p)
@@ -1284,9 +1684,9 @@ public class SkateInGTA : Script
             Rect(x - (w - fw) / 2f / aspect, y, fw / aspect, h, 255, jumpReady ? 140 : 60, 0, 230);
         }
 
-        if (manual)
+        if (manual || grinding)
         {
-            // Balance bar: keep the marker in the middle with W / S.
+            // Balance bar: keep the marker in the middle (W / S in a manual, A / D on a grind).
             const float x = 0.5f, y = 0.86f, w = 0.16f, h = 0.012f;
             Rect(x, y, w / aspect, h, 0, 0, 0, 150);
             Rect(x, y, 0.003f / aspect, h * 1.6f, 255, 255, 255, 120);
@@ -1300,16 +1700,191 @@ public class SkateInGTA : Script
         Function.Call(Hash.DRAW_RECT, x, y, w, h, r, g, b, a, false);
     }
 
+    // Adds a trick to the running combo. Doing the same trick again in one combo is worth less
+    // (half, then a quarter...), so mixing tricks pays off.
     void AddTrickText(string name, int points)
     {
+        int repeats = 0;
+        foreach (string t in comboTricks) if (t == name) repeats++;
         if (points > 0)
         {
-            comboPoints += points;
+            comboPoints += points >> Math.Min(repeats, 4);
             comboMultiplier++;
         }
-        string text = "~y~" + name + "~s~";
-        if (comboPoints > 0) text += "   " + comboPoints + " x" + Math.Max(comboMultiplier, 1);
-        Screen.ShowSubtitle(text, 1500);
+        comboTricks.Add(name);
+    }
+
+    // Big text in the middle of the screen for a moment: "+1200", "BAIL!", "SKETCHY"...
+    void Flash(string text, string sub, Color color)
+    {
+        flashText = text;
+        flashSub = sub;
+        flashColor = color;
+        flashTime = 2.2f;
+    }
+
+    void DrawFlash()
+    {
+        if (flashTime <= 0f) return;
+        flashTime -= Game.LastFrameTime;
+        int alpha = (int)(Math.Min(flashTime / 0.5f, 1f) * 255f);
+        new TextElement(flashText, new PointF(640f, 170f), 0.9f, Color.FromArgb(alpha, flashColor), Font.Pricedown, Alignment.Center, true, true).Draw();
+        if (!string.IsNullOrEmpty(flashSub))
+            new TextElement(flashSub, new PointF(640f, 222f), 0.4f, Color.FromArgb(alpha, 255, 255, 255), Font.ChaletLondon, Alignment.Center, true, true).Draw();
+    }
+
+    // Skate-style readout of the running combo, plus score and the next challenge.
+    void DrawTrickFeed()
+    {
+        string live = manual ? "MANUAL" : grinding ? (grindSlide ? "BOARDSLIDE" : "50-50 GRIND") : powersliding ? "POWERSLIDE" : null;
+        List<string> shown = new List<string>(comboTricks);
+        if (live != null) shown.Add(live);
+        if (shown.Count > 0)
+        {
+            int from = Math.Max(0, shown.Count - 4);
+            string line = (from > 0 ? "... + " : "") + string.Join(" + ", shown.GetRange(from, shown.Count - from).ToArray());
+            new TextElement(line, new PointF(640f, 70f), 0.55f, Color.FromArgb(255, 230, 80), Font.ChaletComprimeCologne, Alignment.Center, true, true).Draw();
+            if (comboPoints > 0)
+                new TextElement(comboPoints + " x " + Math.Max(comboMultiplier, 1), new PointF(640f, 105f), 0.5f, Color.White, Font.ChaletComprimeCologne, Alignment.Center, true, true).Draw();
+        }
+
+        new TextElement("SCORE " + totalScore + "   BEST COMBO " + bestCombo, new PointF(1260f, 20f), 0.4f, Color.White, Font.ChaletComprimeCologne, Alignment.Right, true, true).Draw();
+        int next = Array.IndexOf(challengeDone, false);
+        string goal = next < 0 ? "All challenges done! You're a legend." : "CHALLENGE " + (ChallengesDone() + 1) + "/" + ChallengeIds.Length + ": " + ChallengeTexts[next];
+        new TextElement(goal, new PointF(20f, 20f), 0.38f, Color.FromArgb(150, 220, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
+    }
+
+    // ================================================================ challenges
+
+    void LoadProgress()
+    {
+        progress = ScriptSettings.Load("scripts\\SkateInGTA_progress.ini");
+        for (int i = 0; i < ChallengeIds.Length; i++) challengeDone[i] = progress.GetValue<bool>("Challenges", ChallengeIds[i], false);
+        bestCombo = progress.GetValue<int>("Stats", "BestCombo", 0);
+    }
+
+    int ChallengesDone()
+    {
+        int n = 0;
+        foreach (bool d in challengeDone) if (d) n++;
+        return n;
+    }
+
+    void CompleteChallenge(string id)
+    {
+        int i = Array.IndexOf(ChallengeIds, id);
+        if (i < 0 || challengeDone[i]) return;
+        challengeDone[i] = true;
+        progress.SetValue("Challenges", id, true);
+        progress.Save();
+        totalScore += 500;
+        Notification.Show("~g~CHALLENGE COMPLETE~s~ (" + ChallengesDone() + "/" + ChallengeIds.Length + ")~n~" + ChallengeTexts[i] + "~n~+500");
+        FrontendSound("MEDAL_GOLD", "HUD_AWARDS");
+    }
+
+    // Called when a combo is landed cleanly.
+    void CheckComboChallenges(int earned)
+    {
+        if (comboTricks.Contains("OLLIE")) CompleteChallenge("ollie");
+        if (comboTricks.Contains("KICKFLIP")) CompleteChallenge("kickflip");
+        if (comboTricks.Contains("HEELFLIP")) CompleteChallenge("heelflip");
+        if (comboTags.Contains("FLICK KICKFLIP")) CompleteChallenge("flick");
+        if (comboTags.Contains("SPIN")) CompleteChallenge("spin");
+        if (comboTags.Contains("MANUAL 3S")) CompleteChallenge("manual");
+        if (comboTags.Contains("GRIND 3M")) CompleteChallenge("grind");
+        if (comboTags.Contains("BOARDSLIDE")) CompleteChallenge("boardslide");
+        if (comboTricks.Contains("360 FLIP")) CompleteChallenge("flip360");
+        if (comboTags.Contains("ROCKET"))
+            foreach (string f in FlipTricks)
+                if (comboTricks.Contains(f)) CompleteChallenge("rocket");
+        if (comboMultiplier >= 5) CompleteChallenge("combo5");
+        if (earned >= 5000) CompleteChallenge("score5000");
+    }
+
+    // ================================================================ sound
+    //
+    // Board sounds (rolling, grinding, pop, land, flip) are small WAV files in scripts\SkateInGTA\,
+    // played through Windows' MCI on a background thread so they can overlap and loop.
+    // UI sounds (combo landed, challenge complete...) are GTA's own frontend sounds.
+
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+    static extern int mciSendString(string command, System.Text.StringBuilder result, int resultLength, IntPtr callback);
+
+    static readonly string[] SoundNames = { "roll", "grind", "pop", "land", "flip" };
+    BlockingCollection<string> soundQueue;
+    bool rollPlaying, grindPlaying;
+    int rollVolume = -1, grindVolume = -1;
+
+    void StartSound()
+    {
+        if (!soundEnabled) return;
+        string dir = Path.GetFullPath("scripts\\SkateInGTA");
+        foreach (string n in SoundNames)
+            if (!File.Exists(Path.Combine(dir, n + ".wav"))) return; // shortcut: no sound files = silent board, the mod still works
+
+        soundQueue = new BlockingCollection<string>();
+        Thread t = new Thread(delegate ()
+        {
+            foreach (string cmd in soundQueue.GetConsumingEnumerable())
+                try { mciSendString(cmd, null, 0, IntPtr.Zero); } catch (Exception) { }
+        });
+        t.IsBackground = true;
+        t.SetApartmentState(ApartmentState.STA); // MCI's media player wants a COM apartment
+        t.Start();
+
+        int vol = (int)(Math.Max(0f, Math.Min(soundVolume, 1f)) * 1000f);
+        foreach (string n in SoundNames)
+        {
+            soundQueue.Add("open \"" + Path.Combine(dir, n + ".wav") + "\" type mpegvideo alias skate_" + n);
+            soundQueue.Add("setaudio skate_" + n + " volume to " + vol);
+        }
+    }
+
+    void StopSound()
+    {
+        if (soundQueue == null) return;
+        foreach (string n in SoundNames) soundQueue.Add("close skate_" + n);
+        soundQueue.CompleteAdding();
+        soundQueue = null;
+    }
+
+    void PlaySound(string name)
+    {
+        if (soundQueue != null) soundQueue.Add("play skate_" + name + " from 0");
+    }
+
+    static void FrontendSound(string name, string set)
+    {
+        Function.Call(Hash.PLAY_SOUND_FRONTEND, -1, name, set, true);
+    }
+
+    // Rolling gets louder with speed; grinding and powersliding scrape.
+    void UpdateSoundLoops()
+    {
+        if (soundQueue == null) return;
+        bool active = riding && !Game.IsPaused;
+        float roll = active && !airborne && !grinding ? Math.Min(speed / 12f, 1f) : 0f;
+        float scrape = active && (grinding || powersliding) ? 1f : 0f;
+        SetLoop("roll", roll, ref rollPlaying, ref rollVolume);
+        SetLoop("grind", scrape, ref grindPlaying, ref grindVolume);
+    }
+
+    void SetLoop(string name, float level, ref bool playing, ref int lastVolume)
+    {
+        int vol = (int)(level * Math.Max(0f, Math.Min(soundVolume, 1f)) * 1000f);
+        if (vol <= 20)
+        {
+            if (playing) soundQueue.Add("stop skate_" + name);
+            playing = false;
+            return;
+        }
+        if (Math.Abs(vol - lastVolume) > 40)
+        {
+            soundQueue.Add("setaudio skate_" + name + " volume to " + vol);
+            lastVolume = vol;
+        }
+        if (!playing) soundQueue.Add("play skate_" + name + " from 0 repeat");
+        playing = true;
     }
 
     // ---------------------------------------------------------------- visuals
@@ -1323,9 +1898,16 @@ public class SkateInGTA : Script
         Vector3 n = airborne ? Vector3.WorldUp : groundNormal;
         float pitch = RadToDeg((float)Math.Atan2(-Vector3.Dot(n, forward), n.Z));
         float roll = RadToDeg((float)Math.Atan2(Vector3.Dot(n, right), n.Z));
-        float visualYaw = heading + airSpin + (fakie ? 180f : 0f);
+        // Powerslide turns the board sideways; carving leans it into the turn.
+        float dt = Game.LastFrameTime;
+        slideYaw += ((powersliding ? slideDir * 80f : 0f) - slideYaw) * Math.Min(dt * 10f, 1f);
+        float steer = airborne || grinding ? 0f : Game.GetDisabledControlValueNormalized(Control.MoveLeftRight);
+        carve += (steer - carve) * Math.Min(dt * 6f, 1f);
+        roll += carve * 8f * Math.Min(speed / 8f, 1f);
+        float visualYaw = heading + airSpin + slideYaw + (fakie ? 180f : 0f);
 
         if (manual) pitch += 12f + manualBalance * 10f; // tail down
+        if (grinding) roll += manualBalance * 8f;       // wobble with your balance
 
         anchor.PositionNoOffset = pos;
         anchor.Rotation = new Vector3(pitch, roll, visualYaw);
@@ -1333,6 +1915,7 @@ public class SkateInGTA : Script
         // Crouch while charging an ollie.
         float crouch = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f) * 0.25f;
         if (grabbing) crouch = Math.Max(crouch, 0.4f);
+        if (grinding || powersliding) crouch = Math.Max(crouch, 0.12f);
         ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - crouch), new Vector3(0f, 0f, stanceYaw));
 
         if (board != null && board.Exists())
@@ -1355,16 +1938,22 @@ public class SkateInGTA : Script
     {
         if (cam == null) return;
 
+        // 0 = skate cam, 1 = filmer cam (low and close with a fisheye-wide view, like Skate's filmer),
+        // 2 = far follow cam for big airs.
+        float dist = camMode == 1 ? 2.2f : camMode == 2 ? camDistance * 2f : camDistance;
+        float height = camMode == 1 ? 0.5f : camMode == 2 ? camHeight * 1.8f : camHeight;
+        float baseFov = camMode == 1 ? 95f : 60f;
+
         Vector3 dir = ForwardFromHeading(heading);
-        Vector3 desired = pos - dir * camDistance + Vector3.WorldUp * camHeight;
+        Vector3 desired = pos - dir * dist + Vector3.WorldUp * height;
         float follow = 1f - (float)Math.Exp(-6f * dt);
         camPos = camPos + (desired - camPos) * follow;
 
         cam.Position = camPos;
-        cam.PointAt(pos + Vector3.WorldUp * 0.9f + dir * 1.5f);
+        cam.PointAt(pos + Vector3.WorldUp * (camMode == 1 ? 0.6f : 0.9f) + dir * 1.5f);
 
         // Wider view while boosting for a sense of speed.
-        camFov += ((boosting ? 75f : 60f) - camFov) * Math.Min(dt * 4f, 1f);
+        camFov += ((boosting ? baseFov + 15f : baseFov) - camFov) * Math.Min(dt * 4f, 1f);
         cam.FieldOfView = camFov;
     }
 

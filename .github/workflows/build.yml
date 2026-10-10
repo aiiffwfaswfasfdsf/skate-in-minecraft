@@ -32,6 +32,8 @@ jobs:
           mkdir -p package/scripts
           cp src/bin/Release/net48/SkateInGTA.dll package/scripts/
           cp SkateInGTA.ini package/scripts/
+          mkdir -p package/scripts/SkateInGTA
+          cp sounds/*.wav package/scripts/SkateInGTA/
           cp README.md LICENSE package/
           cd package && zip -r ../SkateInGTA.zip .
 

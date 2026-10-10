@@ -1,12 +1,12 @@
 # Skate in GTA
 
-**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, shove-it, 360 flip, spin, and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system, manuals, grabs, a skatepark spawner, the Hall of Meat, and a **Scramjet-style rocket boost**. Fully playable on **keyboard**.
+**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, 360 flip, grind rails and ledges, boardslide, manual, powerslide and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system (hold the left mouse button and flick, like skate.'s mouse controls), 13 challenges, the Hall of Meat, board sounds, a fisheye filmer cam and slow motion for clips, and a **Scramjet-style rocket boost**. Made for **mouse and keyboard**.
 
 Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game. This mod does the opposite and puts skating into GTA. **You don't need Skate.** You only need GTA V on PC.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.3, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.4, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -32,7 +32,7 @@ Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game.
    - Requirements: [.NET Framework 4.8](https://dotnet.microsoft.com/download/dotnet-framework/net48) and the [Visual C++ Redistributable x64](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 4. **Install Skate in GTA.** Download `SkateInGTA.zip` from [Releases](../../releases).
    - Copy its `scripts` folder into the game folder.
-   - You should end up with `<game folder>\scripts\SkateInGTA.dll` and `<game folder>\scripts\SkateInGTA.ini`.
+   - You should end up with `<game folder>\scripts\SkateInGTA.dll`, `<game folder>\scripts\SkateInGTA.ini` and the sound folder `<game folder>\scripts\SkateInGTA\`.
 5. **Start Story Mode** and press **K**.
 
 ### GTA V Legacy (the older PC version)
@@ -43,7 +43,15 @@ The steps are the same. You can use either SHVDNE or the original [ScriptHookVDo
 
 ScriptHookVDotNet can compile a raw C# file when the game starts:
 - Copy `src/SkateInGTA.cs` into `scripts` and rename it to **`SkateInGTA.3.cs`**. The `.3` tells it to use API v3.
-- Copy `SkateInGTA.ini` into `scripts` as well.
+- Copy `SkateInGTA.ini` into `scripts` as well, and the `sounds` folder as `scripts\SkateInGTA` (optional, for board sounds).
+
+### Your first 5 minutes
+
+1. Press **K** on a quiet street. Hold **W** to push, steer with **A / D**.
+2. Hold **Space** and let go: ollie. Then try **Q** (kickflip).
+3. Find a curb or a bench, ride along it, ollie and land on its edge: you grind. Keep your balance with **A / D**.
+4. Now the real Skate way: **hold the left mouse button, pull the mouse toward you, flick it up-left**. That's a Flick-it kickflip.
+5. The challenge in the top left tells you what to try next. Progress is saved.
 
 ---
 
@@ -51,7 +59,7 @@ ScriptHookVDotNet can compile a raw C# file when the game starts:
 
 There are two ways to do tricks, and you can mix them:
 - **Simple keys:** one key = one trick.
-- **Flick-it:** Skate's stick gestures, on the arrow keys, the mouse, or a controller's right stick.
+- **Flick-it:** Skate's stick gestures with the mouse (hold the left mouse button), the arrow keys, or a controller's right stick. Flick-it tricks score **1.5x**.
 
 ### Basics
 
@@ -64,7 +72,7 @@ There are two ways to do tricks, and you can mix them:
 | Ollie | **Hold Space, release** (longer = higher) | Hold **X / ◻**, release |
 | Spin 180 / 360 *(in the air)* | **Hold A / D**, let go to finish the spin | Left stick |
 
-Spin assist: when you let go of A/D in the air, the spin automatically finishes to the nearest straight or backwards (fakie) position. 180s are easy on a keyboard this way. You can turn it off with `SpinAssist=0`.
+Spin assist: if you let go of A/D within 30 degrees of a clean 180 or 360, the spin finishes itself. You still have to commit to most of the spin. Turn it off with `SpinAssist=0`.
 
 ### Simple keys
 
@@ -82,7 +90,7 @@ Tip: hold **Space** to crouch, then press **Q** for a higher kickflip.
 
 Every gesture starts by pulling the stick **down**, which crouches you. Then you flick it. The pop happens on the flick.
 
-| Trick | Arrow keys | Right stick / mouse |
+| Trick | Arrow keys | Mouse (hold left button) / right stick |
 |---|---|---|
 | Ollie | **↓** then **↑** | down, then flick up |
 | Nollie | **↑** then **↓** | up, then flick down |
@@ -93,7 +101,7 @@ Every gesture starts by pulling the stick **down**, which crouches you. Then you
 | 360 flip | **↓**, **←** (short), then **↑** | down, roll along the left side, flick up |
 | Varial heelflip | **↓**, **→** (short), then **↑** | down, roll along the right side, flick up |
 
-- **Mouse:** pull the mouse toward you, then flick it away. The "stick" springs back to the middle on its own.
+- **Mouse:** hold the left mouse button, pull the mouse toward you, then flick it away. Let go of the button and the "stick" snaps back to the middle. This is how skate.'s own hidden mouse mode works.
 - **Stick display:** the small box in the bottom right shows what the mod sees. A yellow dot means you are crouched and ready to flick. If mouse flicks don't register, raise `MouseSensitivity` in the ini; if tricks happen by accident, lower it or set `Mouse=false`.
 - **Phone and camera:** while you ride, the arrow keys don't open the phone, and the mouse doesn't turn the camera (the Skate camera follows you instead).
 
@@ -121,6 +129,37 @@ Every gesture starts by pulling the stick **down**, which crouches you. Then you
 - **Combos like in Skate:** land while holding Ctrl to go straight into a manual, then ollie out of it into the next trick. The combo only counts when you roll away normally.
 - **Grab:** the longer you hold it, the more points. Let go before you land, or you bail.
 
+### Grinds and slides
+
+There are no special "grind rails": every edge in Los Santos works, including curbs, benches, ledges, handrails and the spawned `prop_skate_rail`.
+
+| Action | Keyboard |
+|---|---|
+| Start a grind | Ollie and land on an edge while riding along it |
+| 50-50 grind | Land with the board straight |
+| Boardslide | Land with the board turned 90 degrees (spin a quarter turn with A / D) |
+| Keep your balance | **A / D** |
+| Ollie or flip out | **Space**, **Q / E / R** or a flick |
+| Step off | **S** |
+
+- The longer and further you grind, the more points. Grinding 3 meters completes a challenge.
+- Lose your balance on a grind and you bail.
+
+### Powerslide
+
+Hold **C** while rolling: the board turns sideways and you slide to a stop. Scores a little if you hold it for a moment.
+
+### Filming clips
+
+| Action | Keyboard |
+|---|---|
+| Cycle camera: Skate cam / **filmer cam** (low fisheye, the Skate look) / far cam | **V** |
+| Slow motion on / off | **B** |
+
+### Challenges
+
+The top left shows your next challenge, from "land an ollie" up to "score 5,000 in one combo". Each one gives +500 points. Progress and your best combo are saved in `scripts\SkateInGTA_progress.ini`; delete that file to start over.
+
 ### Skate spots and ramps
 
 | Action | Keyboard |
@@ -134,15 +173,16 @@ The ramps are GTA's own skatepark props (kickers, funbox, quarter pipe, half pip
 
 ### Hall of Meat
 
-When you bail, the mod scores your crash after you stop tumbling: distance, speed and damage, like Skate's Hall of Meat.
+When you bail, the mod scores your crash after you stop tumbling: distance, speed and damage, like Skate's Hall of Meat. Press **X** to bail on purpose.
 
 ### Landing rules
 
-- A trick must finish before you touch the ground.
-- A spin must land straight or backwards (fakie).
-- Steep slopes, big drops, water, and fast wall hits make you **bail** (ragdoll). Press K to get back on.
+- A trick must finish before you touch the ground. Landing in the last bit of a flip still counts, but it's **sketchy**.
+- A spin must land straight or backwards (fakie). Up to 15 degrees off is clean, up to 35 is **sketchy**, more is a bail.
+- **Sketchy** landings keep the combo but halve it and slow you down.
+- Steep slopes, big drops, water, and fast wall hits make you **bail** (ragdoll). Press **U** to go back to your saved spot or **K** to get back on.
 
-**Score:** each trick adds points and raises the combo multiplier. A clean landing banks the combo; a bail loses it.
+**Score:** each trick adds points and raises the combo multiplier. A clean landing banks the combo; a bail loses it. The same trick twice in one combo is worth half, three times a quarter, so mix it up.
 
 ---
 
@@ -169,6 +209,7 @@ Every value is explained inside the file. The ones you'll most likely change:
 | `[FlickIt] MouseSensitivity` | How strongly mouse movement moves the flick stick |
 | `[FlickIt] ShowStick` | Show the small stick display |
 | `[Camera] UseSkateCam` | `true` = Skate-style camera, `false` = normal GTA camera |
+| `[Sound] Volume` | Board sound volume, `0.0` to `1.0` |
 
 Save the file, then reload scripts in-game (SHVDN's reload key, **Insert** by default) or restart the game.
 
@@ -194,6 +235,8 @@ All the code is in one file, [`src/SkateInGTA.cs`](src/SkateInGTA.cs), with comm
    - The arrow keys, the mouse, or the right stick become one "virtual stick".
    - A small state machine watches it: *down* = crouch, then the direction of the flick picks the trick. Passing along a side on the way up turns it into a 360 flip or varial.
    - On the keyboard it waits a few milliseconds before deciding, so pressing **↑ + ←** "together" still counts as a diagonal.
+6. **Grinds without rail data.** GTA's map has no list of rails, so the mod finds edges with short downward raycasts beside the board. Where the surface ends and the ground next to it is clearly lower, that's an edge. Land on it while moving along it, and you grind.
+7. **Sounds.** The board sounds are generated by [`tools/make_sounds.py`](tools/make_sounds.py) from noise and sine waves (no copied audio) and played with Windows' built-in MCI, so they can loop and overlap. Combo and challenge stingers are GTA's own frontend sounds.
 
 ---
 
@@ -210,6 +253,8 @@ All the code is in one file, [`src/SkateInGTA.cs`](src/SkateInGTA.cs), with comm
 | Camera feels weird | Set `[Camera] UseSkateCam=false`. |
 | Rocket flames point up or sideways | Change `[Rocket] FlamePitch` or `FlameYaw` (try `90`, `-90` or `180`). |
 | Ramps face the wrong way | Set `[Ramps] YawOffset=180`. |
+| No board sounds | Check that `scripts\SkateInGTA\` contains the 5 `.wav` files from the zip. |
+| Grinds start when I don't want them | Land a bit further from curbs and ledges, or step off with **S**. |
 
 ---
 
@@ -227,7 +272,6 @@ The output is `src/bin/Release/net48/SkateInGTA.dll`. GitHub Actions builds ever
 
 ## Ideas for later
 
-- Grinds on rails and ledges (you can already ride on top of a spawned rail)
 - More flip tricks (hardflip, impossible) and more grab types
 - Trick replay / clip camera
 
