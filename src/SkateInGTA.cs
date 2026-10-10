@@ -13,6 +13,7 @@
 //   * Raycasts (invisible laser beams) find the ground under the board and walls in front of it.
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using GTA;
 using GTA.Math;
@@ -48,6 +49,30 @@ public class SkateInGTA : Script
     float trickDuration;    // seconds for one flip trick
     float airSpinRate;      // degrees per second of body spin in the air
     float spinAssist;       // degrees per second the spin snaps to 0/180 when you let go (0 = off)
+
+    // Rocket (Scramjet-style boost and rocket jump)
+    bool rocketEnabled;
+    float rocketThrust;         // m/s^2 of forward thrust
+    float rocketMaxSpeed;       // top speed while boosting (m/s)
+    float rocketAirLift;        // upward thrust in the air, lets you glide (m/s^2)
+    float rocketJumpBoost;      // extra jump speed for a rocket jump (m/s)
+    float rocketJumpCost;       // fuel one rocket jump uses (0..1)
+    float rocketDrain;          // fuel used per second of boost
+    float rocketRecharge;       // fuel regained per second
+    float rocketRechargeDelay;  // seconds after boosting before fuel recharges
+    float flameScale, flamePitch, flameYaw;
+
+    // Manuals
+    float manualPointsPerSecond;
+    float manualDifficulty;
+
+    // Ramps
+    string[] rampModelNames;
+    int maxRamps;
+    float rampDistance;
+    float rampYawOffset;
+
+    Keys markerSetKey, markerReturnKey, rampKey, clearRampsKey;
 
     // Flick-it (Skate-style tricks by flicking a stick)
     bool flickEnabled;
@@ -111,11 +136,48 @@ public class SkateInGTA : Script
     int trickPoints;
     float trickScale;       // longer tricks (like the 360 flip) take more time
 
+    // rocket
+    float rocketFuel = 1f;
+    float rocketCooldown;
+    bool boosting;
+    ParticleEffect rocketFlame;
+    float camFov = 60f;
+
+    // manual: balance goes from -1 (nose down) to 1 (tail down); past either end you lose it
+    bool manual;
+    float manualBalance;
+    float manualNoise;
+    float manualNoiseTimer;
+    float manualPoints;
+
+    // grab
+    bool grabbing;
+    float grabTime;
+
+    // session marker (Skate's "set spot / go back")
+    bool markerSet;
+    Vector3 markerPos;
+    float markerHeading;
+
+    // spawned skatepark props
+    readonly List<Prop> ramps = new List<Prop>();
+    int nextRamp;
+
+    // Hall of Meat: score your bails
+    bool meatActive;
+    Ped meatPed;
+    Vector3 meatStart;
+    float meatTime, meatDistance, meatSpeed;
+    int meatHealth;
+
     // score
     int comboPoints;
     int comboMultiplier;
     int totalScore;
 
+    static readonly Random rng = new Random();
+    const string RocketFxAsset = "veh_impexp_rocket";   // Rocket Voltic boost flames
+    const string RocketFxName = "veh_rocket_boost";
     const float ChargeTime = 0.6f;          // seconds to fully charge an ollie
     const float FlickSettle = 0.07f;        // seconds to wait before reading a flick's direction
     const float FlickMinSideTime = 0.06f;   // the stick must rest on a side this long to count as a sweep
@@ -135,6 +197,34 @@ public class SkateInGTA : Script
         ScriptSettings s = ScriptSettings.Load("scripts\\SkateInGTA.ini");
 
         toggleKey = s.GetValue<Keys>("Controls", "ToggleKey", Keys.K);
+
+        markerSetKey = s.GetValue<Keys>("Controls", "MarkerSetKey", Keys.J);
+        markerReturnKey = s.GetValue<Keys>("Controls", "MarkerReturnKey", Keys.U);
+        rampKey = s.GetValue<Keys>("Controls", "RampKey", Keys.L);
+        clearRampsKey = s.GetValue<Keys>("Controls", "ClearRampsKey", Keys.Delete);
+
+        rocketEnabled = s.GetValue<bool>("Rocket", "Enabled", true);
+        rocketThrust = GetFloat(s, "Rocket", "Thrust", 16f);
+        rocketMaxSpeed = GetFloat(s, "Rocket", "MaxSpeed", 38f);
+        rocketAirLift = GetFloat(s, "Rocket", "AirLift", 6f);
+        rocketJumpBoost = GetFloat(s, "Rocket", "JumpBoost", 8f);
+        rocketJumpCost = GetFloat(s, "Rocket", "JumpCost", 0.35f);
+        rocketDrain = GetFloat(s, "Rocket", "DrainPerSecond", 0.33f);
+        rocketRecharge = GetFloat(s, "Rocket", "RechargePerSecond", 0.2f);
+        rocketRechargeDelay = GetFloat(s, "Rocket", "RechargeDelay", 1f);
+        flameScale = GetFloat(s, "Rocket", "FlameScale", 0.6f);
+        flamePitch = GetFloat(s, "Rocket", "FlamePitch", 0f);
+        flameYaw = GetFloat(s, "Rocket", "FlameYaw", 0f);
+
+        manualPointsPerSecond = GetFloat(s, "Manual", "PointsPerSecond", 60f);
+        manualDifficulty = GetFloat(s, "Manual", "Difficulty", 1f);
+
+        rampModelNames = s.GetValue<string>("Ramps", "Models",
+            "prop_skate_kickers,prop_skate_flatramp,prop_skate_funbox,prop_skate_quartpipe,prop_skate_halfpipe,prop_skate_rail,prop_skate_spiner")
+            .Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        maxRamps = s.GetValue<int>("Ramps", "Max", 8);
+        rampDistance = GetFloat(s, "Ramps", "Distance", 8f);
+        rampYawOffset = GetFloat(s, "Ramps", "YawOffset", 0f);
 
         string models = s.GetValue<string>("Board", "Models", "v_res_skateboard,v_16_skateboard");
         boardModelNames = models.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
@@ -191,16 +281,23 @@ public class SkateInGTA : Script
 
     void OnKeyDown(object sender, System.Windows.Forms.KeyEventArgs e)
     {
-        if (e.KeyCode != toggleKey) return;
+        if (Game.IsPaused) return;
 
-        if (riding) StopRiding();
-        else StartRiding();
+        if (e.KeyCode == toggleKey)
+        {
+            if (riding) StopRiding();
+            else StartRiding(false);
+        }
+        else if (e.KeyCode == markerSetKey) SetMarker();
+        else if (e.KeyCode == markerReturnKey) ReturnToMarker();
+        else if (e.KeyCode == rampKey) SpawnRamp();
+        else if (e.KeyCode == clearRampsKey) ClearRamps(true);
     }
 
-    void StartRiding()
+    void StartRiding(bool ignoreRagdoll)
     {
-        Ped ped = rider;
-        if (ped == null || !ped.Exists() || ped != Game.Player.Character || ped.IsDead || ped.IsInVehicle() || ped.IsRagdoll || Game.IsCutsceneActive)
+        Ped ped = Game.Player.Character;
+        if (ped.IsDead || ped.IsInVehicle() || (ped.IsRagdoll && !ignoreRagdoll) || Game.IsCutsceneActive)
         {
             Notification.Show("~r~Skate in GTA:~s~ get on your feet first.");
             return;
@@ -274,6 +371,12 @@ public class SkateInGTA : Script
         trickName = null;
         comboPoints = 0;
         comboMultiplier = 0;
+        boosting = false;
+        manual = false;
+        grabbing = false;
+        meatActive = false;
+        camFov = 60f;
+        if (rocketEnabled) new ParticleEffectAsset(RocketFxAsset).Request(); // load the flames now, not mid-boost
         riding = true;
 
         UpdateEntities(ped);
@@ -285,7 +388,7 @@ public class SkateInGTA : Script
             World.RenderingCamera = cam;
         }
 
-        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer~n~Hold SPACE + release = ollie~n~Q kickflip, E heelflip, R shove-it~n~Arrows: flick tricks (down, then up)~n~" + toggleKey + " = get off");
+        Notification.Show("~g~Skate in GTA~s~~n~W push, S brake, A/D steer, SPACE ollie~n~Q/E/R flips, arrows = flick tricks~n~SHIFT rocket, SHIFT+SPACE rocket jump~n~CTRL manual, F grab (in air)~n~" + toggleKey + " = get off");
     }
 
     // Ends the session cleanly. Used for hopping off, dying, entering a car, or the script unloading.
@@ -318,6 +421,9 @@ public class SkateInGTA : Script
         ped.CanRagdoll = true;
         ped.Ragdoll(2500, RagdollType.Balance);
         ped.Velocity = velocity;
+        StartHallOfMeat(ped, velocity);
+        manual = false;
+        grabbing = false;
 
         // Let the board fly away on its own physics, then let the game clean it up.
         if (board != null && board.Exists())
@@ -345,10 +451,12 @@ public class SkateInGTA : Script
             DeleteProps();
             DestroyCamera();
         }
+        ClearRamps(false);
     }
 
     void DeleteProps()
     {
+        StopRocket();
         if (board != null && board.Exists()) board.Delete();
         if (anchor != null && anchor.Exists()) anchor.Delete();
         board = null;
@@ -369,10 +477,11 @@ public class SkateInGTA : Script
 
     void OnTick(object sender, EventArgs e)
     {
+        if (meatActive) UpdateHallOfMeat();
         if (!riding) return;
 
-        Ped ped = Game.Player.Character;
-        if (ped.IsDead || ped.IsInVehicle() || Game.IsCutsceneActive || anchor == null || !anchor.Exists())
+        Ped ped = rider;
+        if (ped == null || !ped.Exists() || ped != Game.Player.Character || ped.IsDead || ped.IsInVehicle() || Game.IsCutsceneActive || anchor == null || !anchor.Exists())
         {
             StopRiding();
             return;
@@ -392,6 +501,7 @@ public class SkateInGTA : Script
         }
 
         ReadFlickStick(dt);
+        UpdateRocket(dt);
 
         if (airborne) UpdateAir(dt);
         else UpdateGround(dt);
@@ -401,6 +511,7 @@ public class SkateInGTA : Script
         UpdateEntities(ped);
         UpdateCamera(dt);
         DrawStick();
+        DrawHud();
     }
 
     // Stop GTA from using our buttons for running, jumping, punching, etc.
@@ -427,9 +538,33 @@ public class SkateInGTA : Script
         float steer = Game.GetDisabledControlValueNormalized(Control.MoveLeftRight);  // -1 left .. 1 right
         float throttle = -Game.GetDisabledControlValueNormalized(Control.MoveUpDown); // 1 = W / stick up
 
+        // Manual: hold CTRL to roll on the back wheels. W / S keep your balance instead of pushing.
+        if (manual)
+        {
+            if (!Pressed(Control.Duck))
+            {
+                EndManual();
+                BankCombo();
+            }
+            else if (UpdateManualBalance(dt, throttle))
+            {
+                return;
+            }
+        }
+        else if (Pressed(Control.Duck))
+        {
+            StartManual();
+        }
+
         // Push and brake.
-        if (throttle > 0.1f && speed < pushMaxSpeed) speed += pushAccel * throttle * dt;
-        if (throttle < -0.1f) speed -= brakeDecel * -throttle * dt;
+        if (!manual)
+        {
+            if (throttle > 0.1f && speed < pushMaxSpeed) speed += pushAccel * throttle * dt;
+            if (throttle < -0.1f) speed -= brakeDecel * -throttle * dt;
+        }
+
+        // Rocket boost.
+        if (boosting && speed < rocketMaxSpeed) speed += rocketThrust * dt;
 
         // Rolling friction.
         speed -= speed * friction * dt;
@@ -440,7 +575,8 @@ public class SkateInGTA : Script
         speed -= gravity * uphill * slopeFactor * dt;
 
         if (speed < 0f) speed = 0f;
-        if (speed > maxSpeed) speed = maxSpeed;
+        float limit = boosting ? rocketMaxSpeed : maxSpeed;
+        if (speed > limit) speed = Math.Max(limit, speed - 8f * dt); // rocket speed fades out smoothly
 
         // Steering. Turning is a bit sharper at low speed, like a real board.
         float turnScale = 1.0f - 0.4f * Math.Min(speed / maxSpeed, 1f);
@@ -454,8 +590,7 @@ public class SkateInGTA : Script
         }
         else if (ollieCharge > 0f)
         {
-            Pop(ollieCharge);
-            AddTrickText("OLLIE", 0);
+            if (!Pop(ollieCharge)) AddTrickText("OLLIE", 0);
             return;
         }
 
@@ -498,13 +633,25 @@ public class SkateInGTA : Script
         }
     }
 
-    // Jump off the ground. charge 0..1 decides how high.
-    void Pop(float charge)
+    // Jump off the ground. charge 0..1 decides how high. Holding the rocket button makes it a
+    // rocket jump, like the Scramjet's jump. Returns true for a rocket jump.
+    bool Pop(float charge)
     {
         float pop = ollieMin + (ollieMax - ollieMin) * charge;
         if (Pressed(Control.Jump)) jumpLatch = true;
         ollieCharge = 0f;
+        if (manual) EndManual(); // ollie out of a manual: the combo keeps going
+
+        bool rocketJump = rocketEnabled && Pressed(Control.Sprint) && rocketFuel >= rocketJumpCost;
+        if (rocketJump)
+        {
+            pop += rocketJumpBoost;
+            rocketFuel -= rocketJumpCost;
+            rocketCooldown = rocketRechargeDelay;
+            AddTrickText("ROCKET JUMP", 50);
+        }
         Launch(ForwardFromHeading(heading) * speed + Vector3.WorldUp * (pop + Math.Max(groundVz, 0f)));
+        return rocketJump;
     }
 
     // Q / E / R tricks. On the ground they pop first, in the air they just flip.
@@ -563,6 +710,29 @@ public class SkateInGTA : Script
                 AddTrickText(trickName, trickPoints);
                 trickName = null;
                 trickTime = 0f;
+            }
+        }
+
+        // Grab: hold F. Let go before you land!
+        if (Pressed(Control.Enter))
+        {
+            if (!grabbing) grabTime = 0f;
+            grabbing = true;
+            grabTime += dt;
+        }
+        else if (grabbing)
+        {
+            EndGrab();
+        }
+
+        if (boosting)
+        {
+            airVelocity += ForwardFromHeading(heading) * rocketThrust * dt + Vector3.WorldUp * rocketAirLift * dt;
+            float fs = (float)Math.Sqrt(airVelocity.X * airVelocity.X + airVelocity.Y * airVelocity.Y);
+            if (fs > rocketMaxSpeed)
+            {
+                airVelocity.X *= rocketMaxSpeed / fs;
+                airVelocity.Y *= rocketMaxSpeed / fs;
             }
         }
 
@@ -831,6 +1001,11 @@ public class SkateInGTA : Script
             Bail("Didn't finish the " + trickName.ToLower() + ".");
             return;
         }
+        if (grabbing)
+        {
+            Bail("Still holding the grab.");
+            return;
+        }
         if (-airVelocity.Z > maxLandingSpeed)
         {
             Bail("That drop was too big.");
@@ -857,9 +1032,16 @@ public class SkateInGTA : Script
 
         airborne = false;
         airSpin = 0f;
-        speed = Math.Min(flatSpeed * 0.95f, maxSpeed);
+        speed = Math.Min(flatSpeed * 0.95f, rocketMaxSpeed);
         groundVz = 0f;
 
+        // Landing in a manual (holding CTRL) keeps the combo going, like in Skate.
+        if (Pressed(Control.Duck)) StartManual();
+        else BankCombo();
+    }
+
+    void BankCombo()
+    {
         if (comboPoints > 0)
         {
             int earned = comboPoints * Math.Max(comboMultiplier, 1);
@@ -868,6 +1050,254 @@ public class SkateInGTA : Script
         }
         comboPoints = 0;
         comboMultiplier = 0;
+    }
+
+    // ================================================================ manuals and grabs
+
+    void StartManual()
+    {
+        manual = true;
+        manualBalance = (float)(rng.NextDouble() - 0.5) * 0.1f;
+        manualNoiseTimer = 0f;
+        manualPoints = 0f;
+        comboMultiplier++;
+        AddTrickText("MANUAL", 0);
+    }
+
+    // Returns true if you lost your balance.
+    bool UpdateManualBalance(float dt, float throttle)
+    {
+        manualNoiseTimer -= dt;
+        if (manualNoiseTimer <= 0f)
+        {
+            manualNoise = (float)(rng.NextDouble() * 2.0 - 1.0);
+            manualNoiseTimer = 0.3f;
+        }
+        // The further you lean, the faster you tip over. W leans forward, S leans back.
+        manualBalance += (manualBalance * 1.2f + manualNoise * 0.6f) * manualDifficulty * dt;
+        manualBalance -= throttle * 2.2f * dt;
+        manualPoints += manualPointsPerSecond * dt;
+
+        if (Math.Abs(manualBalance) <= 1f) return false;
+
+        manual = false;
+        comboPoints = 0;
+        comboMultiplier = 0;
+        Screen.ShowSubtitle("~r~LOST BALANCE~s~ combo lost", 2000);
+        return true;
+    }
+
+    // Leaves the manual and adds its points to the combo (without banking it).
+    void EndManual()
+    {
+        manual = false;
+        int pts = (int)manualPoints;
+        manualPoints = 0f;
+        if (pts > 0) AddTrickText("MANUAL", pts);
+    }
+
+    void EndGrab()
+    {
+        grabbing = false;
+        if (grabTime > 0.15f) AddTrickText("INDY GRAB", 20 + (int)(grabTime * 150f));
+    }
+
+    // ================================================================ rocket
+
+    void UpdateRocket(float dt)
+    {
+        bool on = rocketEnabled && Pressed(Control.Sprint) && rocketFuel > 0f && !manual;
+        if (on)
+        {
+            rocketFuel = Math.Max(0f, rocketFuel - rocketDrain * dt);
+            rocketCooldown = rocketRechargeDelay;
+        }
+        else if (rocketCooldown > 0f)
+        {
+            rocketCooldown -= dt;
+        }
+        else
+        {
+            rocketFuel = Math.Min(1f, rocketFuel + rocketRecharge * dt);
+        }
+
+        if (on && !boosting)
+        {
+            ParticleEffectAsset asset = new ParticleEffectAsset(RocketFxAsset);
+            if (asset.IsLoaded)
+                rocketFlame = World.CreateParticleEffect(asset, RocketFxName, anchor, new Vector3(0f, -0.5f, 0.15f),
+                    new Vector3(flamePitch, 0f, flameYaw), flameScale, InvertAxisFlags.None);
+            Screen.StartEffect(ScreenEffect.RaceTurbo, 0, false);
+            if (cam != null) cam.Shake(CameraShake.RoadVibration, 0.6f);
+            boosting = true;
+        }
+        else if (!on && boosting)
+        {
+            StopRocket();
+        }
+    }
+
+    void StopRocket()
+    {
+        if (rocketFlame != null && rocketFlame.Exists()) rocketFlame.Delete();
+        rocketFlame = null;
+        if (boosting) Screen.StopEffect(ScreenEffect.RaceTurbo);
+        if (cam != null) cam.StopShaking();
+        boosting = false;
+    }
+
+    // ================================================================ spots, ramps, Hall of Meat
+
+    void SetMarker()
+    {
+        Ped ped = Game.Player.Character;
+        markerPos = riding ? pos + Vector3.WorldUp : ped.Position;
+        markerHeading = riding ? heading : ped.Heading;
+        markerSet = true;
+        Notification.Show("~b~Skate spot saved.~s~ Press " + markerReturnKey + " to come back here.");
+    }
+
+    void ReturnToMarker()
+    {
+        if (!markerSet)
+        {
+            Notification.Show("No skate spot yet. Press " + markerSetKey + " to save one.");
+            return;
+        }
+        Ped ped = Game.Player.Character;
+        if (ped.IsDead || ped.IsInVehicle()) return;
+        meatActive = false;
+
+        if (riding)
+        {
+            pos = SnapToGround(markerPos);
+            heading = markerHeading;
+            speed = 0f;
+            airborne = false;
+            airSpin = 0f;
+            fakie = false;
+            trickName = null;
+            manual = false;
+            grabbing = false;
+            comboPoints = 0;
+            comboMultiplier = 0;
+            camPos = pos - ForwardFromHeading(heading) * camDistance + Vector3.WorldUp * camHeight;
+            return;
+        }
+
+        ped.Task.ClearAllImmediately(); // also stops a ragdoll after a bail
+        ped.PositionNoOffset = markerPos;
+        ped.Heading = markerHeading;
+        StartRiding(true);
+    }
+
+    // Skate 3-style object dropper: spawns GTA's own skatepark props in front of you.
+    void SpawnRamp()
+    {
+        if (rampModelNames.Length == 0) return;
+        Ped ped = Game.Player.Character;
+        Vector3 origin = riding ? pos : ped.Position;
+        float h = riding ? heading : ped.Heading;
+
+        string name = rampModelNames[nextRamp % rampModelNames.Length].Trim();
+        nextRamp++;
+        Model m = LoadModel(name);
+        if (m == null)
+        {
+            Notification.Show("~r~Ramp model not found:~s~ " + name);
+            return;
+        }
+
+        Vector3 at = SnapToGround(origin + ForwardFromHeading(h) * rampDistance + Vector3.WorldUp);
+        Prop ramp = World.CreateProp(m, at, new Vector3(0f, 0f, h + rampYawOffset), false, true);
+        m.MarkAsNoLongerNeeded();
+        if (ramp == null) return;
+        ramp.IsPositionFrozen = true;
+
+        ramps.Add(ramp);
+        while (ramps.Count > maxRamps)
+        {
+            if (ramps[0].Exists()) ramps[0].Delete();
+            ramps.RemoveAt(0);
+        }
+        Screen.ShowSubtitle("~y~" + name + "~s~   " + rampKey + " = next ramp, " + clearRampsKey + " = remove all", 2500);
+    }
+
+    void ClearRamps(bool notify)
+    {
+        foreach (Prop r in ramps)
+            if (r != null && r.Exists()) r.Delete();
+        ramps.Clear();
+        if (notify) Screen.ShowSubtitle("Ramps removed.", 1500);
+    }
+
+    void StartHallOfMeat(Ped ped, Vector3 velocity)
+    {
+        meatActive = true;
+        meatPed = ped;
+        meatStart = ped.Position;
+        meatTime = 0f;
+        meatDistance = 0f;
+        meatSpeed = velocity.Length();
+        meatHealth = ped.Health;
+    }
+
+    // Waits until the ragdoll is over, then scores the bail by distance, speed and damage.
+    void UpdateHallOfMeat()
+    {
+        if (meatPed == null || !meatPed.Exists())
+        {
+            meatActive = false;
+            return;
+        }
+        meatTime += Game.LastFrameTime;
+        meatDistance = Math.Max(meatDistance, meatPed.Position.DistanceTo(meatStart));
+        if (!meatPed.IsDead && meatTime < 8f && (meatTime < 1.2f || meatPed.IsRagdoll)) return;
+
+        meatActive = false;
+        int damage = Math.Max(0, meatHealth - meatPed.Health);
+        int score = (int)(meatDistance * 25f + meatSpeed * 15f + damage * 10f);
+        Screen.ShowSubtitle("~r~HALL OF MEAT~s~   " + meatDistance.ToString("0.0", CultureInfo.InvariantCulture) + " m, "
+            + damage + " damage = ~y~" + score + "~s~ pts", 4000);
+    }
+
+    Vector3 SnapToGround(Vector3 p)
+    {
+        Entity ignore = anchor != null ? (Entity)anchor : Game.Player.Character;
+        RaycastResult hit = World.Raycast(p + Vector3.WorldUp * 2f, p - Vector3.WorldUp * 6f, GroundFlags, ignore);
+        return hit.DidHit ? hit.HitPosition : p;
+    }
+
+    // ================================================================ HUD
+
+    void DrawHud()
+    {
+        float aspect = Screen.AspectRatio;
+
+        if (rocketEnabled)
+        {
+            // Fuel bar above the stick box. Orange = enough for a rocket jump.
+            const float x = 0.93f, y = 0.77f, w = 0.07f, h = 0.012f;
+            Rect(x, y, w / aspect, h, 0, 0, 0, 150);
+            float fw = w * rocketFuel;
+            bool jumpReady = rocketFuel >= rocketJumpCost;
+            Rect(x - (w - fw) / 2f / aspect, y, fw / aspect, h, 255, jumpReady ? 140 : 60, 0, 230);
+        }
+
+        if (manual)
+        {
+            // Balance bar: keep the marker in the middle with W / S.
+            const float x = 0.5f, y = 0.86f, w = 0.16f, h = 0.012f;
+            Rect(x, y, w / aspect, h, 0, 0, 0, 150);
+            Rect(x, y, 0.003f / aspect, h * 1.6f, 255, 255, 255, 120);
+            int danger = (int)(Math.Min(Math.Abs(manualBalance), 1f) * 255f);
+            Rect(x + manualBalance * (w / 2f) / aspect, y, 0.008f / aspect, h * 1.8f, 255, 255 - danger, 255 - danger, 240);
+        }
+    }
+
+    static void Rect(float x, float y, float w, float h, int r, int g, int b, int a)
+    {
+        Function.Call(Hash.DRAW_RECT, x, y, w, h, r, g, b, a, false);
     }
 
     void AddTrickText(string name, int points)
@@ -895,11 +1325,14 @@ public class SkateInGTA : Script
         float roll = RadToDeg((float)Math.Atan2(Vector3.Dot(n, right), n.Z));
         float visualYaw = heading + airSpin + (fakie ? 180f : 0f);
 
+        if (manual) pitch += 12f + manualBalance * 10f; // tail down
+
         anchor.PositionNoOffset = pos;
         anchor.Rotation = new Vector3(pitch, roll, visualYaw);
 
         // Crouch while charging an ollie.
         float crouch = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f) * 0.25f;
+        if (grabbing) crouch = Math.Max(crouch, 0.4f);
         ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - crouch), new Vector3(0f, 0f, stanceYaw));
 
         if (board != null && board.Exists())
@@ -929,6 +1362,10 @@ public class SkateInGTA : Script
 
         cam.Position = camPos;
         cam.PointAt(pos + Vector3.WorldUp * 0.9f + dir * 1.5f);
+
+        // Wider view while boosting for a sense of speed.
+        camFov += ((boosting ? 75f : 60f) - camFov) * Math.Min(dt * 4f, 1f);
+        cam.FieldOfView = camFov;
     }
 
     // Asks the game to load the animation and plays it once it's ready. Called every frame until it works,

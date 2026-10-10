@@ -1,12 +1,12 @@
 # Skate in GTA
 
-**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, shove-it, 360 flip, spin, and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system, and it's fully playable on **keyboard**.
+**Skate-style skateboarding for GTA V Story Mode.** Push, ollie, kickflip, heelflip, shove-it, 360 flip, spin, and bail, all on the streets of Los Santos. Includes Skate's **Flick-it** trick system, manuals, grabs, a skatepark spawner, the Hall of Meat, and a **Scramjet-style rocket boost**. Fully playable on **keyboard**.
 
 Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game. This mod does the opposite and puts skating into GTA. **You don't need Skate.** You only need GTA V on PC.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.2, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.3, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -97,6 +97,45 @@ Every gesture starts by pulling the stick **down**, which crouches you. Then you
 - **Stick display:** the small box in the bottom right shows what the mod sees. A yellow dot means you are crouched and ready to flick. If mouse flicks don't register, raise `MouseSensitivity` in the ini; if tricks happen by accident, lower it or set `Mouse=false`.
 - **Phone and camera:** while you ride, the arrow keys don't open the phone, and the mouse doesn't turn the camera (the Skate camera follows you instead).
 
+### Rocket boost (like the Scramjet)
+
+| Action | Keyboard | Controller |
+|---|---|---|
+| Rocket boost | **Hold Shift** | Hold A / ✕ |
+| Rocket jump | **Hold Shift + ollie** (Space, Q/E/R or a flick) | Hold A / ✕ + ollie |
+
+- The orange bar above the stick box is your fuel. A full bar lasts about 3 seconds and recharges a second after you stop boosting.
+- A rocket jump uses about a third of the bar. The bar is bright orange when there is enough fuel for one.
+- Boosting in the air pushes you forward and a little up, so you can glide over gaps.
+- Careful: hitting a wall at rocket speed is a guaranteed bail.
+
+### Manuals and grabs
+
+| Action | Keyboard | Controller |
+|---|---|---|
+| Manual (ride on the back wheels) | **Hold Ctrl** | Hold L3 |
+| Keep your balance in a manual | **W / S** | Left stick up / down |
+| Grab *(in the air)* | **Hold F** | Hold Y / △ |
+
+- **Manual:** a balance bar appears. Keep the marker in the middle with W / S. If it reaches the edge, you lose your balance and the combo.
+- **Combos like in Skate:** land while holding Ctrl to go straight into a manual, then ollie out of it into the next trick. The combo only counts when you roll away normally.
+- **Grab:** the longer you hold it, the more points. Let go before you land, or you bail.
+
+### Skate spots and ramps
+
+| Action | Keyboard |
+|---|---|
+| Save a skate spot | **J** |
+| Go back to your spot (also right after a bail) | **U** |
+| Spawn a ramp in front of you (press again for the next type) | **L** |
+| Remove all spawned ramps | **Delete** |
+
+The ramps are GTA's own skatepark props (kickers, funbox, quarter pipe, half pipe, rail, spine). Up to 8 can exist at once.
+
+### Hall of Meat
+
+When you bail, the mod scores your crash after you stop tumbling: distance, speed and damage, like Skate's Hall of Meat.
+
 ### Landing rules
 
 - A trick must finish before you touch the ground.
@@ -121,6 +160,11 @@ Every value is explained inside the file. The ones you'll most likely change:
 | `[Physics] OllieMax` | How high a full ollie goes |
 | `[Tricks] TrickDuration` | Smaller = faster flips = easier to land |
 | `[Tricks] SpinAssist` | Auto-finish spins when you let go (`0` = off) |
+| `[Rocket] Thrust / MaxSpeed` | How hard and how fast the rocket pushes |
+| `[Rocket] JumpBoost / JumpCost` | Rocket jump height and fuel cost |
+| `[Rocket] FlamePitch / FlameYaw` | Turn the flames if they point the wrong way |
+| `[Manual] Difficulty` | Higher = harder to balance |
+| `[Ramps] YawOffset` | Turn spawned ramps if they face the wrong way (try `180`) |
 | `[FlickIt] ArrowKeys / Mouse` | Turn the flick inputs on or off |
 | `[FlickIt] MouseSensitivity` | How strongly mouse movement moves the flick stick |
 | `[FlickIt] ShowStick` | Show the small stick display |
@@ -164,6 +208,8 @@ All the code is in one file, [`src/SkateInGTA.cs`](src/SkateInGTA.cs), with comm
 | Board points sideways | Change `[Board] YawOffset` (try `0` or `90`). |
 | Player floats or sinks | Change `[Rider] Height`. |
 | Camera feels weird | Set `[Camera] UseSkateCam=false`. |
+| Rocket flames point up or sideways | Change `[Rocket] FlamePitch` or `FlameYaw` (try `90`, `-90` or `180`). |
+| Ramps face the wrong way | Set `[Ramps] YawOffset=180`. |
 
 ---
 
@@ -181,10 +227,8 @@ The output is `src/bin/Release/net48/SkateInGTA.dll`. GitHub Actions builds ever
 
 ## Ideas for later
 
-- Grinds on rails and ledges
-- Manuals
-- More flip tricks (360 flip, hardflip) and grabs
-- Spawnable skate ramps (`prop_skate_*`)
+- Grinds on rails and ledges (you can already ride on top of a spawned rail)
+- More flip tricks (hardflip, impossible) and more grab types
 - Trick replay / clip camera
 
 ## Credits
