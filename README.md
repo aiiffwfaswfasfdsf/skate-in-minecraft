@@ -4,6 +4,8 @@
 
 Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game. This mod does the opposite and puts skating into GTA. **You don't need Skate.** You only need GTA V on PC.
 
+> **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
+
 > **Status: v0.1, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
@@ -145,6 +147,7 @@ The output is `src/bin/Release/net48/SkateInGTA.dll`. GitHub Actions builds ever
 
 - [Script Hook V](http://www.dev-c.com/gtav/scripthookv/) by Alexander Blade
 - [ScriptHookVDotNet](https://github.com/scripthookvdotnet/scripthookvdotnet) and [ScriptHookVDotNet Enhanced](https://github.com/Chiheb-Bacha/ScriptHookVDotNetEnhanced)
+- Written by [Claude](https://claude.ai/code) (Anthropic) at the request of the repo owner
 - Research on how other creators built skateboard mods. These were used to pick the board model and riding animation; no code was copied:
   - [SkateV](https://www.gta5-mods.com/scripts/skatev) by jedijosh920
   - [Skate V Plus](https://www.gta5-mods.com/scripts/skate-v-plus) by gopro_2027

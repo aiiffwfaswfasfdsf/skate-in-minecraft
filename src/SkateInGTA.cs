@@ -1,4 +1,5 @@
 // Skate in GTA - Skate-style skateboarding for GTA V Story Mode.
+// Written by Claude (an AI assistant by Anthropic) at the request of the repo owner.
 // Built on the ScriptHookVDotNet v3 API (works with SHVDN on Legacy and SHVDNE on Enhanced).
 //
 // The code is written in C# 5 on purpose: ScriptHookVDotNet can compile a raw .cs file
