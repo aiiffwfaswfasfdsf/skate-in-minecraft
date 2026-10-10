@@ -75,7 +75,15 @@ foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
 }
 
 $game = $null
-foreach ($c in $candidates) { if (Test-GameDir $c) { $game = $c; break } }
+$found = @($candidates | Where-Object { Test-GameDir $_ } | Select-Object -Unique)
+if ($found.Count -eq 1) { $game = $found[0] }
+elseif ($found.Count -gt 1) {
+    Say "Mehrere GTA-Versionen gefunden / several GTA versions found:" Yellow
+    for ($i = 0; $i -lt $found.Count; $i++) { Say "  [$($i + 1)] $($found[$i])" }
+    Say "Tipp: Script Hook V passt oft zu 'Grand Theft Auto V' (Legacy), aber noch nicht zum neuesten 'Enhanced'."
+    do { $pick = Read-Host "Nummer waehlen / choose number" } until ($pick -match '^\d+$' -and [int]$pick -ge 1 -and [int]$pick -le $found.Count)
+    $game = $found[[int]$pick - 1]
+}
 while (-not $game) {
     Say "GTA-Ordner nicht automatisch gefunden. / Could not find the GTA folder." Yellow
     Say "Steam: Rechtsklick auf GTA > Verwalten > Lokale Dateien durchsuchen, dann den Pfad oben aus dem Explorer kopieren."
