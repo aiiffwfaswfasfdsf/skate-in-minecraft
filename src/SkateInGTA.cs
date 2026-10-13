@@ -35,8 +35,8 @@ public class SkateInGTA : Script
     Keys toggleKey;
     string[] boardModelNames;
     string anchorModelName;
-    string rideAnimDict;
-    string rideAnimClip;
+    Keys moneyKey, tuneKey;
+    int moneyAmount;
     bool useSkateCam;
 
     float pushAccel;        // m/s^2 added while pushing
@@ -101,7 +101,18 @@ public class SkateInGTA : Script
 
     bool riding;
     Ped rider;              // the character that got on (switching characters ends the ride)
-    DateTime animGiveUpTime; // stop trying to load the ride animation after this
+    // Body poses: GTA has no skateboard animations, so these are the closest stock clips (see [Anim] in the ini).
+    sealed class Pose
+    {
+        public string Dict, Clip;
+        public int Flags;
+        public bool Dead;          // the clip could not be loaded: don't try again this session
+        public DateTime Deadline;  // give up loading after this
+    }
+    Pose poseRide, poseCharge, poseAir, poseLand, poseArms, poseGrab, poseFallback;
+    Pose curPose, curOverlay;
+    float landPoseTime;
+    bool tuning;               // live stance tuning (see TuneKey)
     Prop anchor;            // invisible, carries the player
     Prop board;             // visible skateboard (may be null if no model could be loaded)
     Camera cam;
@@ -253,8 +264,6 @@ public class SkateInGTA : Script
     };
 
     static readonly Random rng = new Random();
-    const string CrouchDict = "move_crouch_proto";      // same crouch the FiveM skate scripts use
-    const string CrouchClip = "idle_intro";
     const string RocketFxAsset = "veh_impexp_rocket";   // Rocket Voltic boost flames
     const string RocketFxName = "veh_rocket_boost";
     static readonly float[] RailCatch = { 0.12f, -0.12f, 0.24f, -0.24f };
@@ -323,8 +332,17 @@ public class SkateInGTA : Script
         boardHeight = GetFloat(s, "Board", "Height", 0.05f);
         boardYawOffset = GetFloat(s, "Board", "YawOffset", 90f);
 
-        rideAnimDict = s.GetValue<string>("Rider", "AnimDict", "move_strafe@stealth");
-        rideAnimClip = s.GetValue<string>("Rider", "AnimClip", "idle");
+        // Verified to exist in GTA V's animation list. Format: dictionary,clip
+        poseRide = MakePose(s.GetValue<string>("Anim", "Ride", "missexile2,crouching_idle_a"), 1);       // knees bent, feet wide
+        poseCharge = MakePose(s.GetValue<string>("Anim", "Charge", "missexile2,enter_crouch_a"), 2);     // crouch before the pop, held
+        poseAir = MakePose(s.GetValue<string>("Anim", "Air", "nm@stunt_jump,jump_loop"), 1);             // knees tucked
+        poseLand = MakePose(s.GetValue<string>("Anim", "Land", "move_fall,high_land_stand"), 0);         // knees absorb the landing
+        poseArms = MakePose(s.GetValue<string>("Anim", "Arms", "missfam5_yoga,a2_pose"), 49);            // arms out, upper body only
+        poseGrab = MakePose(s.GetValue<string>("Anim", "Grab", "move_slipping,slip_face_downhill_long"), 1);
+        poseFallback = MakePose("move_strafe@stealth,idle", 1);                                          // what the earlier versions used
+        moneyKey = s.GetValue<Keys>("Controls", "MoneyKey", Keys.F9);
+        moneyAmount = s.GetValue<int>("Controls", "MoneyAmount", 10000000);
+        tuneKey = s.GetValue<Keys>("Controls", "TuneKey", Keys.F10);
         pedHeight = GetFloat(s, "Rider", "Height", 1.1f);
         stanceYaw = GetFloat(s, "Rider", "StanceYaw", -90f);
 
@@ -390,6 +408,9 @@ public class SkateInGTA : Script
             Screen.ShowSubtitle(slowMo ? "Slow motion ON" : "Slow motion OFF", 1000);
         }
         else if (e.KeyCode == helpKey && !Game.Player.Character.IsInVehicle()) showHelp = !showHelp; // H = headlights in cars
+        else if (e.KeyCode == moneyKey) AddMoney();
+        else if (e.KeyCode == tuneKey) tuning = !tuning;
+        else if (tuning) TuneKeyDown(e.KeyCode);
         else if (e.KeyCode == tutorialKey)
         {
             if (tutorialStep >= 0) FinishTutorial(false);
@@ -465,8 +486,10 @@ public class SkateInGTA : Script
         ped.CanRagdoll = false;
         ped.Weapons.Select(WeaponHash.Unarmed, true); // no skating with a rifle in your hand
         rider = ped;
-        animGiveUpTime = DateTime.Now.AddSeconds(3);
-        PlayRideAnimation(ped);
+        curPose = null;
+        curOverlay = null;
+        landPoseTime = 0f;
+        foreach (Pose ps in new Pose[] { poseRide, poseCharge, poseAir, poseLand, poseArms, poseGrab, poseFallback }) RequestPose(ps);
 
         speed = 0f;
         groundVz = 0f;
@@ -486,7 +509,6 @@ public class SkateInGTA : Script
         camFov = 60f;
         if (rocketEnabled) new ParticleEffectAsset(RocketFxAsset).Request(); // load the flames now, not mid-boost
         new ParticleEffectAsset("core").Request();
-        Function.Call(Hash.REQUEST_ANIM_DICT, CrouchDict);
         riding = true;
 
         UpdateEntities(ped);
@@ -611,6 +633,7 @@ public class SkateInGTA : Script
             Notification.Show("~g~Skate in GTA~s~ loaded. Press ~b~" + toggleKey + "~s~ to skate, ~b~" + helpKey + "~s~ for all controls.~n~Challenges done: " + ChallengesDone() + " / " + ChallengeIds.Length);
         }
         DrawWatermark();
+        if (tuning) DrawTune();
         UpdateSoundLoops();
         DrawFlash();
         if (showHelp) DrawHelp();
@@ -1324,6 +1347,7 @@ public class SkateInGTA : Script
         airSpin = 0f;
         speed = Math.Min(flatSpeed * 0.95f, rocketMaxSpeed);
         groundVz = 0f;
+        if (fallSpeed > 3f) landPoseTime = 0.35f;
         PlaySound("land", Math.Max(0.35f, Math.Min(fallSpeed / 10f, 1f)));
         if (fallSpeed > 4f) Dust("bang_concrete", Math.Min(fallSpeed / 8f, 1.5f));
         if (cam != null && fallSpeed > 7f) cam.Shake(CameraShake.Jolt, Math.Min(fallSpeed / 15f, 1f));
@@ -1881,11 +1905,53 @@ public class SkateInGTA : Script
         new TextElement(goal, new PointF(20f, 20f), 0.38f, Color.FromArgb(150, 220, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
+    // Story mode cash without the Native Trainer (that one needs a numpad, which laptops don't have).
+    void AddMoney()
+    {
+        long total = (long)Game.Player.Money + moneyAmount;
+        Game.Player.Money = (int)Math.Min(total, 2000000000L); // stay clear of the int limit
+        Notification.Show("~g~$" + moneyAmount.ToString("N0", CultureInfo.InvariantCulture) + " added~s~ (" + Game.Player.Money.ToString("N0", CultureInfo.InvariantCulture) + ")");
+    }
+
+    // Live stance tuning with the number row (no numpad needed). Saved values override the ini.
+    //   1 / 2 player height   3 / 4 stance turn   5 / 6 board turn   7 / 8 board height   9 save
+    void TuneKeyDown(Keys k)
+    {
+        if (k == Keys.D1) pedHeight -= 0.02f;
+        else if (k == Keys.D2) pedHeight += 0.02f;
+        else if (k == Keys.D3) stanceYaw -= 5f;
+        else if (k == Keys.D4) stanceYaw += 5f;
+        else if (k == Keys.D5) boardYawOffset -= 5f;
+        else if (k == Keys.D6) boardYawOffset += 5f;
+        else if (k == Keys.D7) boardHeight -= 0.01f;
+        else if (k == Keys.D8) boardHeight += 0.01f;
+        else if (k == Keys.D9)
+        {
+            progress.SetValue("Tune", "Height", pedHeight.ToString("0.###", CultureInfo.InvariantCulture));
+            progress.SetValue("Tune", "StanceYaw", stanceYaw.ToString("0.#", CultureInfo.InvariantCulture));
+            progress.SetValue("Tune", "BoardYaw", boardYawOffset.ToString("0.#", CultureInfo.InvariantCulture));
+            progress.SetValue("Tune", "BoardHeight", boardHeight.ToString("0.###", CultureInfo.InvariantCulture));
+            SaveProgress();
+            Notification.Show("~g~Stance saved.~s~ Tell Claude: height " + pedHeight.ToString("0.###", CultureInfo.InvariantCulture)
+                + ", stance " + stanceYaw.ToString("0.#", CultureInfo.InvariantCulture) + ", board " + boardYawOffset.ToString("0.#", CultureInfo.InvariantCulture)
+                + ", board height " + boardHeight.ToString("0.###", CultureInfo.InvariantCulture));
+        }
+    }
+
+    void DrawTune()
+    {
+        string t = "TUNE (" + tuneKey + " = off)   1/2 player height " + pedHeight.ToString("0.00", CultureInfo.InvariantCulture)
+            + "   3/4 stance turn " + stanceYaw.ToString("0", CultureInfo.InvariantCulture)
+            + "   5/6 board turn " + boardYawOffset.ToString("0", CultureInfo.InvariantCulture)
+            + "   7/8 board height " + boardHeight.ToString("0.00", CultureInfo.InvariantCulture) + "   9 = save";
+        new TextElement(t, new PointF(640f, 660f), 0.34f, Color.FromArgb(255, 255, 230, 80), Font.ChaletLondon, Alignment.Center, true, true).Draw();
+    }
+
     // Small badge bottom left: if you see it, the mod is loaded.
     void DrawWatermark()
     {
         if (Game.IsPaused) return;
-        new TextElement("SKATE IN GTA  v0.8  made by Claude" + (riding ? "" : "  -  " + toggleKey + " = skate"), new PointF(12f, 694f), 0.3f,
+        new TextElement("SKATE IN GTA  v0.10  made by Claude" + (riding ? "" : "  -  " + toggleKey + " = skate"), new PointF(12f, 694f), 0.3f,
             Color.FromArgb(170, 255, 255, 255), Font.ChaletLondon, Alignment.Left, true, true).Draw();
     }
 
@@ -2038,6 +2104,10 @@ public class SkateInGTA : Script
         for (int i = 0; i < ChallengeIds.Length; i++) challengeDone[i] = progress.GetValue<bool>("Challenges", ChallengeIds[i], false);
         bestCombo = progress.GetValue<int>("Stats", "BestCombo", 0);
         tutorialDone = progress.GetValue<bool>("Stats", "TutorialDone", false);
+        pedHeight = GetFloat(progress, "Tune", "Height", pedHeight);        // values saved with the tuning keys win over the ini
+        stanceYaw = GetFloat(progress, "Tune", "StanceYaw", stanceYaw);
+        boardYawOffset = GetFloat(progress, "Tune", "BoardYaw", boardYawOffset);
+        boardHeight = GetFloat(progress, "Tune", "BoardHeight", boardHeight);
     }
 
     int ChallengesDone()
@@ -2206,12 +2276,19 @@ public class SkateInGTA : Script
         anchor.PositionNoOffset = pos;
         anchor.Rotation = new Vector3(pitch, roll, visualYaw);
 
-        // Crouch while charging an ollie.
-        float crouch = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f) * 0.25f;
-        if (grabbing) crouch = Math.Max(crouch, 0.4f);
-        if (grinding || powersliding) crouch = Math.Max(crouch, 0.12f);
-        bool crouchAnim = Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, CrouchDict, CrouchClip, 3);
-        ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight - (crouchAnim ? 0f : crouch)), new Vector3(0f, 0f, stanceYaw));
+        // Pick the body pose. The feet stay where they are while the animation bends the knees, so the
+        // attach height doesn't change with the pose.
+        float charge = Math.Max(ollieCharge, flickState == FlickFromDown ? flickCharge : 0f);
+        landPoseTime -= Game.LastFrameTime;
+        Pose want = grabbing ? poseGrab
+            : landPoseTime > 0f ? poseLand
+            : airborne ? poseAir
+            : charge > 0.05f && !grinding ? poseCharge
+            : poseRide;
+        ApplyPose(ped, want, charge);
+        ApplyOverlay(ped, (manual || grinding) ? poseArms : null);
+
+        ped.AttachTo(anchor, new Vector3(0f, 0f, pedHeight), new Vector3(0f, 0f, stanceYaw));
 
         if (board != null && board.Exists())
         {
@@ -2226,17 +2303,6 @@ public class SkateInGTA : Script
             board.AttachTo(anchor, new Vector3(0f, 0f, boardHeight + lift), new Vector3(0f, flipRoll, boardYawOffset + flipYaw));
         }
 
-        // Crouched body pose while charging, grabbing or grinding; relaxed riding pose otherwise.
-        bool wantCrouch = crouch >= 0.1f;
-        if (wantCrouch && Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, CrouchDict))
-        {
-            if (!Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, CrouchDict, CrouchClip, 3))
-                ped.Task.PlayAnimation(CrouchDict, CrouchClip, 6f, -1, AnimationFlags.StayInEndFrame);
-        }
-        else if (rideAnimDict.Length > 0 && !Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, rideAnimDict, rideAnimClip, 3))
-        {
-            PlayRideAnimation(ped);
-        }
     }
 
     void UpdateCamera(float dt)
@@ -2262,19 +2328,71 @@ public class SkateInGTA : Script
         cam.FieldOfView = camFov;
     }
 
-    // Asks the game to load the animation and plays it once it's ready. Called every frame until it works,
-    // so we never freeze the game while waiting. Gives up after a few seconds if the name is wrong.
-    void PlayRideAnimation(Ped ped)
+    static Pose MakePose(string spec, int flags)
     {
-        if (string.IsNullOrEmpty(rideAnimDict)) return;
-
-        if (!Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, rideAnimDict))
+        Pose p = new Pose();
+        string[] parts = (spec ?? "").Split(',');
+        if (parts.Length == 2 && parts[0].Trim().Length > 0)
         {
-            Function.Call(Hash.REQUEST_ANIM_DICT, rideAnimDict);
-            if (DateTime.Now > animGiveUpTime) rideAnimDict = "";
+            p.Dict = parts[0].Trim();
+            p.Clip = parts[1].Trim();
+        }
+        else p.Dead = true; // empty in the ini = use the fallback pose
+        p.Flags = flags;
+        return p;
+    }
+
+    // Starts loading the clip without waiting; gives up after a few seconds if the name is wrong.
+    static bool RequestPose(Pose p)
+    {
+        if (p.Dead) return false;
+        if (Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, p.Dict)) return true;
+        if (p.Deadline == default(DateTime)) p.Deadline = DateTime.Now.AddSeconds(4);
+        else if (DateTime.Now > p.Deadline)
+        {
+            p.Dead = true;
+            return false;
+        }
+        Function.Call(Hash.REQUEST_ANIM_DICT, p.Dict);
+        return false;
+    }
+
+    void ApplyPose(Ped ped, Pose p, float charge)
+    {
+        if (p.Dead || !RequestPose(p)) p = poseFallback;
+        if (p.Dead || !RequestPose(p)) return;
+
+        if (curPose != p || !Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, p.Dict, p.Clip, 3))
+        {
+            ped.Task.PlayAnimation(p.Dict, p.Clip, 6f, -6f, -1, (AnimationFlags)p.Flags, 0f);
+            curPose = p;
+        }
+        if (p == poseCharge)
+        {
+            // Hold the crouch clip at a frame that follows the charge: deeper crouch = longer you held.
+            Function.Call(Hash.SET_ENTITY_ANIM_SPEED, ped, p.Dict, p.Clip, 0f);
+            Function.Call(Hash.SET_ENTITY_ANIM_CURRENT_TIME, ped, p.Dict, p.Clip, Math.Min(charge, 1f));
+        }
+    }
+
+    // Second animation on top (arms out while grinding / in a manual). null = remove it.
+    void ApplyOverlay(Ped ped, Pose p)
+    {
+        if (p == null || p.Dead)
+        {
+            if (curOverlay != null)
+            {
+                ped.Task.ClearAnimation(curOverlay.Dict, curOverlay.Clip);
+                curOverlay = null;
+            }
             return;
         }
-        ped.Task.PlayAnimation(rideAnimDict, rideAnimClip, 8f, -1, AnimationFlags.Loop);
+        if (!RequestPose(p)) return;
+        if (curOverlay != p || !Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM, ped, p.Dict, p.Clip, 3))
+        {
+            ped.Task.PlayAnimation(p.Dict, p.Clip, 4f, -4f, -1, (AnimationFlags)p.Flags, 0f);
+            curOverlay = p;
+        }
     }
 
     // ---------------------------------------------------------------- helpers

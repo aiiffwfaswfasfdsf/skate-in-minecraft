@@ -6,7 +6,7 @@ Inspired by the "GTA 5 in Skate" clips: those put the GTA map into a skate game.
 
 > **🤖 Made by Claude.** This project was written entirely by [Claude](https://claude.ai/code), an AI assistant made by Anthropic. The repo owner only gave the idea and directions; Claude wrote the code, the docs and the build setup.
 
-> **Status: v0.7, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
+> **Status: v0.10, early and untested in-game.** The code compiles against the real ScriptHookVDotNet API, but it hasn't been played yet. If something feels off, most of it can be tuned in `SkateInGTA.ini` without touching code. Bug reports are welcome under [Issues](../../issues).
 
 ---
 
@@ -187,6 +187,27 @@ The top left shows your next challenge, from "land an ollie" up to "score 5,000 
 | Remove all spawned ramps | **Delete** |
 
 The ramps are GTA's own skatepark props (kickers, funbox, quarter pipe, half pipe, rail, spine). Up to 8 can exist at once.
+
+### Money (no trainer needed)
+
+Press **F9** in Story Mode: you get $10,000,000 per press (change `MoneyAmount` in the ini). It stops at 2 billion.
+The F4 menu from Script Hook V (Native Trainer) is steered with the **numpad** (NUM 2/4/6/8, NUM 5 to select, NumLock on), which laptops often don't have, so F9 is the easy way.
+
+### Stance tuning (how you stand on the board)
+
+Everybody's GTA looks a bit different, so you can fix the stance live. Press **F10**, then use the number row:
+
+| Keys | What it changes |
+|---|---|
+| **1 / 2** | Player lower / higher (feet sinking into or floating over the board) |
+| **3 / 4** | Turn the player on the board (regular / goofy / facing forward) |
+| **5 / 6** | Turn the board (if it points sideways) |
+| **7 / 8** | Board lower / higher |
+| **9** | Save (survives restarts) |
+
+### Animations
+
+GTA has no skateboard animations, so the mod uses the closest stock clips: bent knees while riding, a crouch that follows how long you charge the ollie, a tuck in the air, knees absorbing the landing, arms out in manuals and grinds, and a hand-down grab. They are listed in `[Anim]` in the ini and you can swap any of them. Exact Skate animations would need custom clips, and those belong to EA.
 
 ### Hall of Meat
 
